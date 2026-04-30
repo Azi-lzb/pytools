@@ -1,0 +1,29 @@
+2026-04-29 11:20:49 [INFO] 开始宽表汇总(3_9_8): 源 15，规则 12，行头后缀=False
+2026-04-29 11:20:49 [WARNING] 处理 20250131广东省信贷收支月报（共享）.xls 失败: Pandas requires version '2.0.1' or newer of 'xlrd' (version '1.2.0' currently installed).
+2026-04-29 11:20:49 [WARNING] 处理 20250228广东省信贷收支月报（共享）.xls 失败: Pandas requires version '2.0.1' or newer of 'xlrd' (version '1.2.0' currently installed).
+2026-04-29 11:20:49 [WARNING] 处理 20250331广东省信贷收支月报（共享）.xls 失败: Pandas requires version '2.0.1' or newer of 'xlrd' (version '1.2.0' currently installed).
+2026-04-29 11:20:49 [WARNING] 处理 20250430广东省信贷收支月报（共享）.xls 失败: Pandas requires version '2.0.1' or newer of 'xlrd' (version '1.2.0' currently installed).
+2026-04-29 11:20:49 [WARNING] 处理 20250531广东省信贷收支月报（共享）.xls 失败: Pandas requires version '2.0.1' or newer of 'xlrd' (version '1.2.0' currently installed).
+2026-04-29 11:20:49 [WARNING] 处理 20250630广东省信贷收支月报（共享）.xls 失败: Pandas requires version '2.0.1' or newer of 'xlrd' (version '1.2.0' currently installed).
+2026-04-29 11:20:49 [WARNING] 处理 20250731广东省信贷收支月报（共享）.xls 失败: Pandas requires version '2.0.1' or newer of 'xlrd' (version '1.2.0' currently installed).
+2026-04-29 11:20:49 [WARNING] 处理 20250831广东省信贷收支月报（共享）.xls 失败: Pandas requires version '2.0.1' or newer of 'xlrd' (version '1.2.0' currently installed).
+2026-04-29 11:20:49 [WARNING] 处理 20250930广东省信贷收支月报（共享）.xls 失败: Pandas requires version '2.0.1' or newer of 'xlrd' (version '1.2.0' currently installed).
+2026-04-29 11:20:49 [WARNING] 处理 20251031广东省信贷收支月报（共享）.xls 失败: Pandas requires version '2.0.1' or newer of 'xlrd' (version '1.2.0' currently installed).
+2026-04-29 11:20:49 [WARNING] 处理 20251130广东省信贷收支月报（共享）.xls 失败: Pandas requires version '2.0.1' or newer of 'xlrd' (version '1.2.0' currently installed).
+2026-04-29 11:20:49 [WARNING] 处理 20251231广东省信贷收支月报（共享）.xls 失败: Pandas requires version '2.0.1' or newer of 'xlrd' (version '1.2.0' currently installed).
+2026-04-29 11:20:49 [WARNING] 处理 20260131广东省信贷收支月报（共享）.xls 失败: Pandas requires version '2.0.1' or newer of 'xlrd' (version '1.2.0' currently installed).
+2026-04-29 11:20:49 [WARNING] 处理 20260228广东省信贷收支月报（共享）.xls 失败: Pandas requires version '2.0.1' or newer of 'xlrd' (version '1.2.0' currently installed).
+2026-04-29 11:20:49 [WARNING] 处理 20260331广东省信贷收支月报（共享）.xls 失败: Pandas requires version '2.0.1' or newer of 'xlrd' (version '1.2.0' currently installed).
+2026-04-29 11:20:49 [INFO] 规则[中外资本外币分地区] wb_miss=15 sheet_miss=0 cells=0
+2026-04-29 11:20:49 [INFO] 规则[中外资人民币分地区] wb_miss=15 sheet_miss=0 cells=0
+2026-04-29 11:20:49 [INFO] 规则[中外资外币分地区] wb_miss=15 sheet_miss=0 cells=0
+2026-04-29 11:20:49 [INFO] 规则[两项收入] wb_miss=0 sheet_miss=0 cells=0
+2026-04-29 11:20:49 [INFO] 规则[二批涉农] wb_miss=0 sheet_miss=0 cells=0
+2026-04-29 11:20:49 [INFO] 规则[二批房地产] wb_miss=0 sheet_miss=0 cells=0
+2026-04-29 11:20:49 [INFO] 规则[二批大中小] wb_miss=0 sheet_miss=0 cells=0
+2026-04-29 11:20:49 [INFO] 规则[二批分行业] wb_miss=0 sheet_miss=0 cells=0
+2026-04-29 11:20:49 [INFO] 规则[二批个人住房] wb_miss=0 sheet_miss=0 cells=0
+2026-04-29 11:20:49 [INFO] 规则[二批银承] wb_miss=0 sheet_miss=0 cells=0
+2026-04-29 11:20:49 [INFO] 规则[普惠分地区] wb_miss=0 sheet_miss=0 cells=0
+2026-04-29 11:20:49 [INFO] 规则[绿色分地区] wb_miss=0 sheet_miss=0 cells=0
+2026-04-29 11:20:49 [INFO] 完成: 无匹配结果，不生成输出文件

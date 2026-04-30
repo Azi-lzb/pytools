@@ -1,0 +1,3 @@
+2026-04-29 12:47:26 [INFO] [COM] 开始宽表汇总(3_9_8): 源 15，规则 12，行头后缀=False
+2026-04-29 12:48:07 [INFO] [COM] 完成: 规则数 1，输出行 390，冲突 0 → C:\Users\AZI\Desktop\VibeCode项目\通用汇总工具pythonExcel\pytools\output\20260429_124807_宽表规则汇总（行头不加后缀）_COM.xlsx
+2026-04-29 12:48:08 [INFO] 追加到目标 C:\Users\AZI\Desktop\VibeCode项目\通用汇总工具vbaExcel\pytools\test.xlsx::两项收入 输入=390 批内去重后=390 目标去重后新增=30
