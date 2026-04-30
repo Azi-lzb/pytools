@@ -82,6 +82,31 @@ def parse_col_spec(v) -> int:
     return n
 
 
+def parse_col_specs(v) -> list[int]:
+    """解析多列配置：支持 `A,C` / `1,3` / `A;C` / `A，C`；返回正整数列号列表。"""
+    if v is None:
+        return []
+    if isinstance(v, float) and pd.isna(v):
+        return []
+    s = str(v).strip()
+    if not s:
+        return []
+    parts = (
+        s.replace("，", ",")
+        .replace("；", ",")
+        .replace(";", ",")
+        .split(",")
+    )
+    out: list[int] = []
+    seen: set[int] = set()
+    for p in parts:
+        n = parse_col_spec(p)
+        if n > 0 and n not in seen:
+            out.append(n)
+            seen.add(n)
+    return out
+
+
 def _skip_match(skip_kws: list[str], text: str) -> bool:
     if not skip_kws or not text:
         return False
@@ -257,17 +282,26 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
         data_date = ""
 
     row_header_specified = getattr(rule, "row_header_col_specified", True)
-    rh_col = rule.row_header_col - 1
+    rh_cols_cfg = getattr(rule, "row_header_cols", None)
+    if row_header_specified:
+        if rh_cols_cfg:
+            rh_cols = [c - 1 for c in rh_cols_cfg if c > 0]
+        else:
+            rh_cols = [rule.row_header_col - 1]
+    else:
+        rh_cols = []
     ch_rows = [r - 1 for r in rule.col_header_rows]
     if row_header_specified:
-        if rh_col < 0 or rh_col >= cols:
+        if not rh_cols:
+            return []
+        if any(c < 0 or c >= cols for c in rh_cols):
             return []
     if any(r < 0 or r >= rows for r in ch_rows):
         return []
 
     r_start = rule.data_row_start - 1 if rule.data_row_start else max(ch_rows) + 1
     r_end = (rule.data_row_end - 1) if rule.data_row_end else rows - 1
-    c_start = rule.data_col_start - 1 if rule.data_col_start else (rh_col + 1 if row_header_specified else 0)
+    c_start = rule.data_col_start - 1 if rule.data_col_start else ((max(rh_cols) + 1) if row_header_specified else 0)
     c_end = (rule.data_col_end - 1) if rule.data_col_end else cols - 1
 
     if r_start > r_end or c_start > c_end:
@@ -276,7 +310,10 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
     # 必含行头/列头 校验
     rh_values = []
     if row_header_specified:
-        rh_values = [_row_header_text(df, r, rh_col, merge_ranges) for r in range(r_start, r_end + 1)]
+        for r in range(r_start, r_end + 1):
+            parts = [_row_header_text(df, r, c, merge_ranges) for c in rh_cols]
+            parts = [p for p in parts if p]
+            rh_values.append("_".join(parts))
     ch_values_flat = []
     for r in ch_rows:
         for c in range(c_start, c_end + 1):
@@ -319,14 +356,18 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
     raw_row_count: dict[str, int] = {}
     for r in range(r_start, r_end + 1):
         if row_header_specified:
-            p = _row_header_text(df, r, rh_col, merge_ranges)
+            parts = [_row_header_text(df, r, c, merge_ranges) for c in rh_cols]
+            parts = [p for p in parts if p]
+            p = "_".join(parts)
         else:
             p = f"ROW#{r + 1}"
         if p:
             raw_row_count[p] = raw_row_count.get(p, 0) + 1
     for r in range(r_start, r_end + 1):
         if row_header_specified:
-            raw = _row_header_text(df, r, rh_col, merge_ranges)
+            parts = [_row_header_text(df, r, c, merge_ranges) for c in rh_cols]
+            parts = [p for p in parts if p]
+            raw = "_".join(parts)
         else:
             raw = f"ROW#{r + 1}"
         if not raw:

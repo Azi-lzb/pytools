@@ -123,6 +123,7 @@ class TimelineRule:
     sheet_keyword: str
     row_header_col: int
     col_header_row: int  # 单行用 "3"，多行用 "2,3"
+    row_header_cols: list[int] = field(default_factory=list)
     row_header_col_specified: bool = True
     col_header_rows: list[int] = field(default_factory=list)
     required_col_headers: list[str] = field(default_factory=list)
@@ -283,16 +284,18 @@ def load_timeline_rules(cfg_path: Path) -> list[TimelineRule]:
             target_write_enabled = _truthy(row.get("启用目标写入"))
         else:
             target_write_enabled = True
-        from .rule_engine import parse_col_spec
+        from .rule_engine import parse_col_spec, parse_col_specs
         row_col_raw = _to_str(row.get("行头列"))
-        row_col_parsed = parse_col_spec(row.get("行头列"))
-        row_col_specified = row_col_parsed > 0
+        row_col_parsed_list = parse_col_specs(row.get("行头列"))
+        row_col_parsed = row_col_parsed_list[0] if row_col_parsed_list else 0
+        row_col_specified = len(row_col_parsed_list) > 0
         rules.append(TimelineRule(
             enabled=True,
             name=_to_str(row.get("规则名称")),
             wb_keyword=_to_str(row.get("工作簿关键字")),
             sheet_keyword=_to_str(row.get("工作表关键字")),
             row_header_col=row_col_parsed or 1,
+            row_header_cols=row_col_parsed_list,
             row_header_col_specified=row_col_specified if row_col_raw else False,
             col_header_row=col_header_rows[0],
             col_header_rows=col_header_rows,
