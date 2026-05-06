@@ -929,15 +929,25 @@ def dispatch(choice: str) -> None:
         if not srcs:
             print("[已取消]")
             return
-        try:
-            stat = run_fx_header_fix_com(srcs, g.log_dir)
+        normal_srcs, com_srcs = _split_sources_for_auto_route(srcs)
+        print(f"→ 自动路由：非COM={len(normal_srcs)}，COM(.xls)={len(com_srcs)}")
+        if normal_srcs:
+            stat = run_fx_header_fix(normal_srcs, g.log_dir)
             print(
-                f"[完成] [COM] 文件={stat['files']} 保存={stat['saved_files']} "
+                f"[完成] 非COM 文件={stat['files']} 保存={stat['saved_files']} "
                 f"外汇sheet={stat['fx_sheets']} 修改sheet={stat['modified_sheets']} "
                 f"失败={stat['failed_files']}"
             )
-        except RuntimeError as e:
-            print(f"[COM 不可用] {e}")
+        if com_srcs:
+            try:
+                stat = run_fx_header_fix_com(com_srcs, g.log_dir)
+                print(
+                    f"[完成] COM 文件={stat['files']} 保存={stat['saved_files']} "
+                    f"外汇sheet={stat['fx_sheets']} 修改sheet={stat['modified_sheets']} "
+                    f"失败={stat['failed_files']}"
+                )
+            except RuntimeError as e:
+                print(f"[COM 不可用] {e}")
     elif choice == "x16com":
         tasks = load_extract_tasks(CFG_PATH)
         if not tasks:
@@ -947,16 +957,27 @@ def dispatch(choice: str) -> None:
         if not srcs:
             print("[已取消]")
             return
-        try:
-            stat = run_extract_sheets_com(srcs, tasks, g.output_dir, g.log_dir)
+        normal_srcs, com_srcs = _split_sources_for_auto_route(srcs)
+        print(f"→ 自动路由：非COM={len(normal_srcs)}，COM(.xls)={len(com_srcs)}")
+        if normal_srcs:
+            stat = run_extract_sheets(normal_srcs, tasks, g.output_dir, g.log_dir)
             print(
-                f"[完成] [COM] 源文件={stat['files']} 提取sheet={stat['extracted_sheets']} "
+                f"[完成] 非COM 源文件={stat['files']} 提取sheet={stat['extracted_sheets']} "
                 f"输出文件={stat['output_files']} 失败={stat['failed_files']}"
             )
             for p in stat["paths"]:
                 print(f"  -> {p}")
-        except RuntimeError as e:
-            print(f"[COM 不可用] {e}")
+        if com_srcs:
+            try:
+                stat = run_extract_sheets_com(com_srcs, tasks, g.output_dir, g.log_dir)
+                print(
+                    f"[完成] COM 源文件={stat['files']} 提取sheet={stat['extracted_sheets']} "
+                    f"输出文件={stat['output_files']} 失败={stat['failed_files']}"
+                )
+                for p in stat["paths"]:
+                    print(f"  -> {p}")
+            except RuntimeError as e:
+                print(f"[COM 不可用] {e}")
     elif choice == "x18":
         cur = _pick_one_workbook("选择本期 Excel 文件")
         if not cur:
