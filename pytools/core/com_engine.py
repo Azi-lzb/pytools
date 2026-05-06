@@ -6,9 +6,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
+import os
 
 
 XL_CALC_MANUAL = -4135
+
+
+def _com_debug_enabled() -> bool:
+    return str(os.environ.get("PYTOOLS_DEBUG_COM", "")).strip().lower() in ("1", "true", "yes", "on")
 
 
 class ArrayLike:
@@ -98,9 +104,18 @@ def read_sheet_values(ws) -> ArrayLike:
 def get_merge_ranges_com(ws) -> tuple[tuple[int, int, int, int], ...]:
     """从当前 COM worksheet 读取合并区域，返回 0-based 坐标元组。"""
     ranges: list[tuple[int, int, int, int]] = []
+    debug = _com_debug_enabled()
+    t0 = time.perf_counter()
+    sheet_name = ""
+    try:
+        sheet_name = str(ws.Name)
+    except Exception:
+        sheet_name = "<unknown>"
     try:
         used = ws.UsedRange
     except Exception:
+        if debug:
+            print(f"[COM][merge] {sheet_name}: UsedRange 读取失败")
         return tuple()
 
     try:
@@ -112,20 +127,18 @@ def get_merge_ranges_com(ws) -> tuple[tuple[int, int, int, int], ...]:
                 int(ma.Column) - 1,
                 int(ma.Column + ma.Columns.Count - 1) - 1,
             ))
+        if debug:
+            print(
+                f"[COM][merge] {sheet_name}: MergeAreas 路径, "
+                f"count={len(ranges)}, cost={time.perf_counter() - t0:.2f}s"
+            )
     except Exception:
-        for row in used.Rows:
-            for cell in row.Cells:
-                try:
-                    if bool(cell.MergeCells):
-                        ma = cell.MergeArea
-                        ranges.append((
-                            int(ma.Row) - 1,
-                            int(ma.Row + ma.Rows.Count - 1) - 1,
-                            int(ma.Column) - 1,
-                            int(ma.Column + ma.Columns.Count - 1) - 1,
-                        ))
-                except Exception:
-                    continue
+        # 回退逐格扫描在 COM 下非常慢（常见分钟级），默认禁用以保证时效。
+        if debug:
+            print(
+                f"[COM][merge] {sheet_name}: MergeAreas 失败，已跳过逐格回退扫描，"
+                f"cost={time.perf_counter() - t0:.2f}s"
+            )
     return tuple(sorted(set(ranges)))
 
 
