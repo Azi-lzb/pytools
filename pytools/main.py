@@ -768,14 +768,23 @@ def dispatch(choice: str) -> None:
         if not srcs:
             print("[已取消]")
             return
-        try:
-            stat = run_summary_by_usedrange_com(srcs, g.output_dir, g.log_dir)
+        normal_srcs, com_srcs = _split_sources_for_auto_route(srcs)
+        print(f"→ 自动路由：非COM={len(normal_srcs)}，COM(.xls)={len(com_srcs)}")
+        if normal_srcs:
+            stat = run_summary_by_usedrange(normal_srcs, g.output_dir, g.log_dir)
             if not stat.get("saved"):
-                print("[完成] [COM] 无可汇总数据，未生成文件")
+                print("[完成] 非COM 无可汇总数据，未生成文件")
             else:
-                print(f"[完成] [COM] 行数={stat['rows']} 输出={stat['path']}")
-        except RuntimeError as e:
-            print(f"[COM 不可用] {e}")
+                print(f"[完成] 非COM 行数={stat['rows']} 输出={stat['path']}")
+        if com_srcs:
+            try:
+                stat = run_summary_by_usedrange_com(com_srcs, g.output_dir, g.log_dir)
+                if not stat.get("saved"):
+                    print("[完成] COM 无可汇总数据，未生成文件")
+                else:
+                    print(f"[完成] COM 行数={stat['rows']} 输出={stat['path']}")
+            except RuntimeError as e:
+                print(f"[COM 不可用] {e}")
     elif choice == "s22com":
         tmpl = _pick_one_workbook("选择 [COM] 批注汇总模板文件")
         if not tmpl:
@@ -785,14 +794,23 @@ def dispatch(choice: str) -> None:
         if not srcs:
             print("[已取消]")
             return
-        try:
-            stat = run_summary_by_comment_com(tmpl, srcs, g.output_dir, g.log_dir)
+        normal_srcs, com_srcs = _split_sources_for_auto_route(srcs)
+        print(f"→ 自动路由：非COM={len(normal_srcs)}，COM(.xls)={len(com_srcs)}")
+        if normal_srcs:
+            stat = run_summary_by_comment(tmpl, normal_srcs, g.output_dir, g.log_dir)
             if not stat.get("saved"):
-                print("[完成] [COM] 无可汇总数据，未生成文件")
+                print("[完成] 非COM 无可汇总数据，未生成文件")
             else:
-                print(f"[完成] [COM] 行数={stat['rows']} 输出={stat['path']}")
-        except RuntimeError as e:
-            print(f"[COM 不可用] {e}")
+                print(f"[完成] 非COM 行数={stat['rows']} 输出={stat['path']}")
+        if com_srcs:
+            try:
+                stat = run_summary_by_comment_com(tmpl, com_srcs, g.output_dir, g.log_dir)
+                if not stat.get("saved"):
+                    print("[完成] COM 无可汇总数据，未生成文件")
+                else:
+                    print(f"[完成] COM 行数={stat['rows']} 输出={stat['path']}")
+            except RuntimeError as e:
+                print(f"[COM 不可用] {e}")
     elif choice == "sv1":
         src = _pick_one_workbook("选择问卷汇总输入文件（通常是 3.2.2 按批注汇总输出）")
         if not src:
