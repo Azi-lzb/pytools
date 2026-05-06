@@ -141,7 +141,17 @@ def find_sheet_com(wb, name: str):
 
 
 def open_readonly(app, path: Path):
-    return app.Workbooks.Open(str(path.resolve()), ReadOnly=True, UpdateLinks=0, AddToMru=False)
+    # 显式关闭常见交互项，避免 COM 调用被弹窗阻塞。
+    return app.Workbooks.Open(
+        str(path.resolve()),
+        ReadOnly=True,
+        UpdateLinks=0,
+        AddToMru=False,
+        Notify=False,
+        IgnoreReadOnlyRecommended=True,
+        CorruptLoad=0,
+        Local=True,
+    )
 
 
 def safe_close(wb) -> None:

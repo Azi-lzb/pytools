@@ -61,12 +61,15 @@ def run_wide_summary_com(rules: list[TimelineRule], path_maps: list[PathMapRule]
         for src in sources:
             src_wb = None
             try:
+                log.info(f"[COM] 正在打开源文件: {src}")
                 src_wb = open_readonly(app, src)
+                log.info(f"[COM] 已打开源文件: {src.name}")
             except Exception as e:
                 log.warning(f"打开源失败 {src.name}: {e}")
                 continue
             try:
                 all_sheets = list_sheet_names_com(src_wb)
+                log.info(f"[COM] 工作表数量 {len(all_sheets)}: {src.name}")
                 sheet_cache: dict[str, tuple[ArrayLike, tuple[tuple[int, int, int, int], ...]]] = {}
 
                 for rule in rules:
@@ -81,6 +84,7 @@ def run_wide_summary_com(rules: list[TimelineRule], path_maps: list[PathMapRule]
                             continue
                         hit_sheet = True
                         if sn not in sheet_cache:
+                            log.info(f"[COM] 读取工作表: {src.name}::{sn}")
                             ws = src_wb.Worksheets(sn)
                             sheet_cache[sn] = (read_sheet_values(ws), get_merge_ranges_com(ws))
                         df, merge_ranges = sheet_cache[sn]
