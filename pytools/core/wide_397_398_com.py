@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import time
 
 import pandas as pd
 
@@ -73,15 +74,21 @@ def run_wide_summary_com(rules: list[TimelineRule], path_maps: list[PathMapRule]
                 sheet_cache: dict[str, tuple[ArrayLike, tuple[tuple[int, int, int, int], ...]]] = {}
 
                 for rule in rules:
+                    rule_t0 = time.perf_counter()
+                    cells_before = rule_stats[rule.name]["cells"]
                     if not _kw_match(src.name, rule.wb_keyword):
                         rule_stats[rule.name]["wb_miss"] += 1
                         continue
                     if not _is_wide_rule_compatible(rule, log):
                         continue
-                    hit_sheet = False
-                    for sn in all_sheets:
-                        if not _kw_match(sn, rule.sheet_keyword):
-                            continue
+                    matched_sheets = [sn for sn in all_sheets if _kw_match(sn, rule.sheet_keyword)]
+                    hit_sheet = len(matched_sheets) > 0
+                    if matched_sheets:
+                        log.info(
+                            "[COM] 规则[%s] 命中工作表 %s 个: %s",
+                            rule.name, len(matched_sheets), ",".join(matched_sheets[:8])
+                        )
+                    for sn in matched_sheets:
                         hit_sheet = True
                         if sn not in sheet_cache:
                             log.info(f"[COM] 读取工作表: {src.name}::{sn}")
@@ -124,6 +131,10 @@ def run_wide_summary_com(rules: list[TimelineRule], path_maps: list[PathMapRule]
                             row_dict[ec.col_path] = ec.value
                     if not hit_sheet:
                         rule_stats[rule.name]["sheet_miss"] += 1
+                    log.info(
+                        "[COM] 规则[%s] 用时 %.2fs, 产出cells=%s",
+                        rule.name, time.perf_counter() - rule_t0, rule_stats[rule.name]["cells"] - cells_before
+                    )
             finally:
                 safe_close(src_wb)
     finally:
