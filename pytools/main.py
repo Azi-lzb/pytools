@@ -426,11 +426,24 @@ def dispatch(choice: str) -> None:
         if not tmpl or not srcs:
             print("[已取消]")
             return
-        try:
-            out = run_compare_com(tmpl, srcs, rules, g)
-            print(f"[完成] [COM] 输出: {out}")
-        except RuntimeError as e:
-            print(f"[COM 不可用] {e}")
+        normal_srcs, com_srcs = _split_sources_for_auto_route(srcs)
+        print(f"→ 自动路由：非COM={len(normal_srcs)}，COM(.xls)={len(com_srcs)}")
+        out_normal = None
+        out_com = None
+        if normal_srcs:
+            out_normal = run_compare(tmpl, normal_srcs, rules, g)
+        if com_srcs:
+            try:
+                out_com = run_compare_com(tmpl, com_srcs, rules, g)
+            except RuntimeError as e:
+                print(f"[COM 不可用] {e}")
+        if out_normal is None and out_com is None:
+            print("[完成] 无匹配结果，未生成文件")
+        else:
+            if out_normal is not None:
+                print(f"[完成] 非COM输出: {out_normal}")
+            if out_com is not None:
+                print(f"[完成] COM输出: {out_com}")
     elif choice == "2com":
         rules = load_timeline_rules(CFG_PATH)
         path_maps = load_path_maps(CFG_PATH)
