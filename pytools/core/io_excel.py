@@ -7,6 +7,15 @@ import pandas as pd
 _INVALID_SHEET_CHARS = re.compile(r"[\\/?*\[\]:]")
 
 
+def _excel_engine_for_path(path_text: str) -> str | None:
+    ext = Path(path_text).suffix.lower()
+    if ext in (".xlsx", ".xlsm"):
+        return "openpyxl"
+    if ext == ".xls":
+        return "xlrd"
+    return None
+
+
 def safe_sheet_name(name: str, used: set[str]) -> str:
     """清洗非法字符 + 截断 31 字符 + 处理重复后缀。"""
     s = _INVALID_SHEET_CHARS.sub("_", name or "Sheet")[:31] or "Sheet"
@@ -35,7 +44,8 @@ def write_workbook(out_path: Path, sheets: dict[str, pd.DataFrame]) -> Path:
 
 @lru_cache(maxsize=16)
 def _read_sheet_2d_cached(path_text: str, sheet: str, mtime: float, size: int) -> pd.DataFrame:
-    return pd.read_excel(path_text, sheet_name=sheet, header=None, dtype=object)
+    engine = _excel_engine_for_path(path_text)
+    return pd.read_excel(path_text, sheet_name=sheet, header=None, dtype=object, engine=engine)
 
 
 def read_sheet_2d(path: Path, sheet: str) -> pd.DataFrame:
@@ -56,7 +66,8 @@ def clear_sheet_cache() -> None:
 
 @lru_cache(maxsize=64)
 def _list_sheet_names_cached(path_text: str, mtime: float, size: int) -> tuple[str, ...]:
-    return tuple(pd.ExcelFile(path_text).sheet_names)
+    engine = _excel_engine_for_path(path_text)
+    return tuple(pd.ExcelFile(path_text, engine=engine).sheet_names)
 
 
 def list_sheet_names(path: Path) -> list[str]:
@@ -124,7 +135,12 @@ def append_to_target(target_wb: Path, target_sheet: str,
         batch_dedup_rows = len(new_df)
 
     if target_wb.exists() and target_sheet in list_sheet_names(target_wb):
-        old = pd.read_excel(target_wb, sheet_name=target_sheet, dtype=object)
+        old = pd.read_excel(
+            target_wb,
+            sheet_name=target_sheet,
+            dtype=object,
+            engine=_excel_engine_for_path(str(target_wb)),
+        )
         old_cols = [str(c) for c in old.columns]
 
         # 表头安全：要求固定前缀列存在，否则跳过写入，避免误把不相干表覆盖掉
