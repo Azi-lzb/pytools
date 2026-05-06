@@ -259,6 +259,20 @@ def _split_sources_for_auto_route(paths: list[Path]) -> tuple[list[Path], list[P
     return normal_list, com_list
 
 
+def _split_print_tasks_for_auto_route(tasks: list[dict]) -> tuple[list[dict], list[dict]]:
+    """打印配置自动路由：.xls 走 COM；其余走非 COM。"""
+    normal_list: list[dict] = []
+    com_list: list[dict] = []
+    for t in tasks:
+        p = t.get("source_wb")
+        suffix = str(getattr(p, "suffix", "")).lower() if p is not None else ""
+        if suffix == ".xls":
+            com_list.append(t)
+        else:
+            normal_list.append(t)
+    return normal_list, com_list
+
+
 def _show_main_menu() -> str:
     print(MAIN_MENU)
     while True:
@@ -602,49 +616,86 @@ def dispatch(choice: str) -> None:
         if not srcs:
             print("[已取消]")
             return
-        try:
-            stat = run_print_keep_by_comment_com(srcs, g.output_dir, g.log_dir)
+        normal_srcs, com_srcs = _split_sources_for_auto_route(srcs)
+        print(f"→ 自动路由：非COM={len(normal_srcs)}，COM(.xls)={len(com_srcs)}")
+        if normal_srcs:
+            stat = run_print_keep_by_comment(normal_srcs, g.output_dir, g.log_dir)
             print(
-                f"[完成] [COM] 命中工作簿={stat['workbooks_hit']} 命中sheet={stat['sheets_hit']} "
+                f"[完成] 非COM 命中工作簿={stat['workbooks_hit']} 命中sheet={stat['sheets_hit']} "
                 f"输出文件={stat['saved_files']} 跳过={stat['skipped']}"
             )
-        except RuntimeError as e:
-            print(f"[COM 不可用] {e}")
+        if com_srcs:
+            try:
+                stat = run_print_keep_by_comment_com(com_srcs, g.output_dir, g.log_dir)
+                print(
+                    f"[完成] COM 命中工作簿={stat['workbooks_hit']} 命中sheet={stat['sheets_hit']} "
+                    f"输出文件={stat['saved_files']} 跳过={stat['skipped']}"
+                )
+            except RuntimeError as e:
+                print(f"[COM 不可用] {e}")
     elif choice == "p3com":
         srcs = _pick_source_files("选择 [COM] 按批注打印（快速复制）源文件（可多选）")
         if not srcs:
             print("[已取消]")
             return
-        try:
-            stat = run_print_fast_by_comment_com(srcs, g.output_dir, g.log_dir)
+        normal_srcs, com_srcs = _split_sources_for_auto_route(srcs)
+        print(f"→ 自动路由：非COM={len(normal_srcs)}，COM(.xls)={len(com_srcs)}")
+        if normal_srcs:
+            stat = run_print_fast_by_comment(normal_srcs, g.output_dir, g.log_dir)
             print(
-                f"[完成] [COM] 命中工作簿={stat['workbooks_hit']} 命中sheet={stat['sheets_hit']} "
+                f"[完成] 非COM 命中工作簿={stat['workbooks_hit']} 命中sheet={stat['sheets_hit']} "
                 f"输出文件={stat['saved_files']} 跳过={stat['skipped']}"
             )
-        except RuntimeError as e:
-            print(f"[COM 不可用] {e}")
+        if com_srcs:
+            try:
+                stat = run_print_fast_by_comment_com(com_srcs, g.output_dir, g.log_dir)
+                print(
+                    f"[完成] COM 命中工作簿={stat['workbooks_hit']} 命中sheet={stat['sheets_hit']} "
+                    f"输出文件={stat['saved_files']} 跳过={stat['skipped']}"
+                )
+            except RuntimeError as e:
+                print(f"[COM 不可用] {e}")
     elif choice == "p7com":
         tasks = load_print_tasks(CFG_PATH)
-        try:
-            stat = run_print_config_all_modes_com(tasks, g.log_dir)
+        normal_tasks, com_tasks = _split_print_tasks_for_auto_route(tasks)
+        print(f"→ 自动路由：非COM任务={len(normal_tasks)}，COM任务(.xls)={len(com_tasks)}")
+        if normal_tasks:
+            stat = run_print_config_all_modes(normal_tasks, g.log_dir)
             print(
-                f"[完成] [COM] 任务成功={stat['task_ok']} 跳过={stat['task_skip']} "
+                f"[完成] 非COM 任务成功={stat['task_ok']} 跳过={stat['task_skip']} "
                 f"写入sheet={stat['written_sheets']} 写入行={stat['written_rows']}"
             )
-        except RuntimeError as e:
-            print(f"[COM 不可用] {e}")
+        if com_tasks:
+            try:
+                stat = run_print_config_all_modes_com(com_tasks, g.log_dir)
+                print(
+                    f"[完成] COM 任务成功={stat['task_ok']} 跳过={stat['task_skip']} "
+                    f"写入sheet={stat['written_sheets']} 写入行={stat['written_rows']}"
+                )
+            except RuntimeError as e:
+                print(f"[COM 不可用] {e}")
     elif choice == "ppdf":
         tasks = load_print_tasks(CFG_PATH)
-        try:
-            stat = run_print_config_to_pdf_com(tasks, g.output_dir, g.log_dir)
+        normal_tasks, com_tasks = _split_print_tasks_for_auto_route(tasks)
+        print(f"→ 自动路由：非COM任务={len(normal_tasks)}，COM任务(.xls)={len(com_tasks)}")
+        if normal_tasks:
+            print("[提示] 非COM任务不支持直接导出PDF，已按非COM常规打印执行。")
+            stat = run_print_config_all_modes(normal_tasks, g.log_dir)
             print(
-                f"[完成] [COM] 任务成功={stat['task_ok']} 跳过={stat['task_skip']} "
+                f"[完成] 非COM 任务成功={stat['task_ok']} 跳过={stat['task_skip']} "
                 f"写入sheet={stat['written_sheets']} 写入行={stat['written_rows']}"
             )
-            for p in stat["pdf_files"]:
-                print(f"  PDF -> {p}")
-        except RuntimeError as e:
-            print(f"[COM 不可用] {e}")
+        if com_tasks:
+            try:
+                stat = run_print_config_to_pdf_com(com_tasks, g.output_dir, g.log_dir)
+                print(
+                    f"[完成] COM(PDF) 任务成功={stat['task_ok']} 跳过={stat['task_skip']} "
+                    f"写入sheet={stat['written_sheets']} 写入行={stat['written_rows']}"
+                )
+                for p in stat["pdf_files"]:
+                    print(f"  PDF -> {p}")
+            except RuntimeError as e:
+                print(f"[COM 不可用] {e}")
     elif choice == "t3":
         srcs = _pick_source_files("选择要批量重命名的文件（可多选）")
         if not srcs:
