@@ -276,6 +276,58 @@ def _normalize_header_noise(curr: str, prev: str) -> str:
     return curr
 
 
+def _strip_tail_digits(text: str) -> str:
+    if not text:
+        return text
+    m = _TAIL_DIGITS_RE.match(text)
+    if not m:
+        return text
+    base = (m.group(1) or "").strip()
+    return base or text
+
+
+def _normalize_header_row_noise(texts: list[str]) -> list[str]:
+    """整行修正 .xls 表头污染。
+
+    典型脏值：
+    - 境内存款 / 境内存款1 / 境内存款11
+    - 活期存款2 / 活期存款21 / 活期存款211
+
+    若一段连续列满足“后一列 = 前一列 + 纯数字后缀”，则整段统一归并为去尾数后的 base。
+    """
+    if not texts:
+        return texts
+    out = list(texts)
+    n = len(out)
+    i = 0
+    while i < n:
+        curr = out[i]
+        if not curr:
+            i += 1
+            continue
+        base = _strip_tail_digits(curr)
+        j = i + 1
+        prev = curr
+        chain_ok = False
+        while j < n and out[j]:
+            nxt = out[j]
+            if _strip_tail_digits(nxt) != base:
+                break
+            if nxt.startswith(prev) and nxt != prev and nxt[len(prev):].isdigit():
+                chain_ok = True
+                prev = nxt
+                j += 1
+                continue
+            break
+        if chain_ok:
+            for k in range(i, j):
+                out[k] = base
+            i = j
+        else:
+            i += 1
+    return out
+
+
 def _row_header_text(df, r: int, c: int, merge_ranges: tuple[tuple[int, int, int, int], ...]) -> str:
     """行头取值：先取自身；若空且为合并区域成员则取左上角。"""
     if r < 0 or c < 0 or r >= df.shape[0] or c >= df.shape[1]:
@@ -347,6 +399,15 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
     if r_start > r_end or c_start > c_end:
         return []
 
+    # 预计算列表头文本，并先按整行做一次脏值归一化。
+    header_row_texts: dict[int, list[str]] = {}
+    for r in ch_rows:
+        row_texts = [
+            _header_cell_text_with_left_fill(df, r, c, merge_ranges)
+            for c in range(c_start, c_end + 1)
+        ]
+        header_row_texts[r] = _normalize_header_row_noise(row_texts)
+
     # 必含行头/列头 校验
     rh_values = []
     if row_header_specified:
@@ -356,8 +417,7 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
             rh_values.append("_".join(parts))
     ch_values_flat = []
     for r in ch_rows:
-        for c in range(c_start, c_end + 1):
-            ch_values_flat.append(_header_cell_text_with_left_fill(df, r, c, merge_ranges))
+        ch_values_flat.extend(header_row_texts.get(r, []))
     if row_header_specified and not _required_match(rule.required_row_headers, rh_values):
         return []
     if not _required_match(rule.required_col_headers, ch_values_flat):
@@ -365,14 +425,13 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
 
     # 生成列头路径（按列）
     col_path_raw: dict[int, str] = {}
-    prev_by_header_row: dict[int, str] = {}
     for c in range(c_start, c_end + 1):
         parts: list[str] = []
+        c0 = c - c_start
         for r in ch_rows:
-            p = _header_cell_text_with_left_fill(df, r, c, merge_ranges)
-            p = _normalize_header_noise(p, prev_by_header_row.get(r, ""))
+            row_texts = header_row_texts.get(r, [])
+            p = row_texts[c0] if 0 <= c0 < len(row_texts) else ""
             if p:
-                prev_by_header_row[r] = p
                 parts.append(p)
         col_path_raw[c] = "_".join(parts)
 
