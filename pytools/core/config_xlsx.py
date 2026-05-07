@@ -307,7 +307,21 @@ def load_timeline_rules(cfg_path: Path) -> list[TimelineRule]:
         if not _truthy(row.get("是否启用")):
             continue
         col_header_raw = _to_str(row.get("列表头行"))
-        col_header_rows = [_to_int(x) for x in col_header_raw.replace("，", ",").split(",") if x.strip()]
+        tokens = [
+            t.strip() for t in (
+                col_header_raw
+                .replace("，", ",")
+                .replace("；", ";")
+                .replace(" ", ",")
+                .replace(";", ",")
+                .split(",")
+            ) if t.strip()
+        ]
+        col_header_rows = []
+        for t in tokens:
+            v = _to_int(t, 0)
+            if v > 0:
+                col_header_rows.append(v)
         if not col_header_rows:
             col_header_rows = [_to_int(col_header_raw, 1)]
         target_wb = _to_str(row.get("目标工作簿路径"))

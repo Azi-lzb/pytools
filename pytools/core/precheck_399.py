@@ -127,7 +127,16 @@ def run_precheck(cfg_path: Path) -> int:
                     print(f"  [错误] 时序提取规则 第{row_no}行({name or '未命名'}): 列表头行为空")
                     errs += 1
                 else:
-                    vals = [x.strip() for x in col_rows_raw.replace("，", ",").split(",") if x.strip()]
+                    vals = [
+                        x.strip() for x in (
+                            col_rows_raw
+                            .replace("，", ",")
+                            .replace("；", ";")
+                            .replace(" ", ",")
+                            .replace(";", ",")
+                            .split(",")
+                        ) if x.strip()
+                    ]
                     if not vals:
                         print(f"  [错误] 时序提取规则 第{row_no}行({name or '未命名'}): 列表头行非法")
                         errs += 1
