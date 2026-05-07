@@ -60,6 +60,14 @@ def match_all_keywords(source: str, keywords: str) -> bool:
 _kw_match = match_all_keywords
 
 
+def pick_rules_for_workbook(rules: list[TimelineRule], wb_name: str, mode: str) -> list[TimelineRule]:
+    """按工作簿命中策略筛规则。mode=all_match/first_match。"""
+    matched = [r for r in rules if _kw_match(wb_name, r.wb_keyword)]
+    if mode == "first_match":
+        return matched[:1]
+    return matched
+
+
 def parse_col_spec(v) -> int:
     """B → 2; '3' → 3; 3 → 3; '' → 0。"""
     if v is None:

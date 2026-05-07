@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 
 from .config_xlsx import GlobalConfig, TimelineRule, PathMapRule
-from .rule_engine import extract_cells, _kw_match
+from .rule_engine import extract_cells, _kw_match, pick_rules_for_workbook
 from .io_excel import (
     list_source_files, list_sheet_names, write_workbook, append_to_target, clear_sheet_cache, read_sheet_2d
 )
@@ -91,7 +91,7 @@ def run_wide_summary(rules: list[TimelineRule], path_maps: list[PathMapRule],
 
     for src in sources:
         try:
-            for rule in rules:
+            for rule in pick_rules_for_workbook(rules, src.name, g.timeline_rule_match_mode):
                 if getattr(rule, "set_parse_error", ""):
                     log.warning("规则[%s] set区域配置非法，已跳过: %s", rule.name, rule.set_parse_error)
                     continue

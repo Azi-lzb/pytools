@@ -23,7 +23,7 @@ from .com_engine import (
 from .config_xlsx import GlobalConfig, PathMapRule, TimelineRule
 from .io_excel import append_to_target, list_source_files, write_workbook
 from .logger import get_logger
-from .rule_engine import _kw_match, extract_cells_from_arrays
+from .rule_engine import _kw_match, extract_cells_from_arrays, pick_rules_for_workbook
 from .timeline_396 import SLIM_COLS
 
 
@@ -58,7 +58,7 @@ def run_timeline_slim_com(rules: list[TimelineRule], path_maps: list[PathMapRule
                 all_sheets = list_sheet_names_com(src_wb)
                 sheet_cache: dict[str, tuple[ArrayLike, tuple[tuple[int, int, int, int], ...]]] = {}
 
-                for rule in rules:
+                for rule in pick_rules_for_workbook(rules, src.name, g.timeline_rule_match_mode):
                     if not _kw_match(src.name, rule.wb_keyword):
                         rule_stats[rule.name]["wb_miss"] += 1
                         continue
@@ -107,12 +107,12 @@ def run_timeline_slim_com(rules: list[TimelineRule], path_maps: list[PathMapRule
 
     # 写入目标簿（与 pandas 版行为一致）
     targets: dict[tuple, list[list]] = {}
-    for rule in rules:
+    for rule in pick_rules_for_workbook(rules, src.name, g.timeline_rule_match_mode):
         if rule.target_write_enabled and rule.target_wb_path and rule.target_sheet:
             targets[(rule.target_wb_path, rule.target_sheet)] = []
     if targets:
         for row in rows:
-            for rule in rules:
+            for rule in pick_rules_for_workbook(rules, src.name, g.timeline_rule_match_mode):
                 if (row[2] == rule.name and rule.target_write_enabled
                         and rule.target_wb_path and rule.target_sheet):
                     targets[(rule.target_wb_path, rule.target_sheet)].append(row)
@@ -136,3 +136,5 @@ def run_timeline_slim_com(rules: list[TimelineRule], path_maps: list[PathMapRule
                     )
 
     return out_path
+
+

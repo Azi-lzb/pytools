@@ -126,6 +126,7 @@ GLOBAL_DEFAULTS = {
     "源文件扩展名": ".xlsx;.xlsm;.csv",
     "错误策略": "continue",
     "默认编码": "utf-8",
+    "时序规则命中策略": "all_match",
     "excel目的格式": "xlsx",
     "word目的格式": "docx",
 }

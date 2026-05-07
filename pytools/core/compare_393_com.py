@@ -29,7 +29,7 @@ from .compare_393 import (
 )
 from .io_excel import write_workbook
 from .logger import get_logger
-from .rule_engine import match_all_keywords
+from .rule_engine import match_all_keywords, pick_rules_for_workbook
 
 
 def run_compare_com(template_path: Path, source_paths: list[Path],
@@ -95,7 +95,7 @@ def run_compare_com(template_path: Path, source_paths: list[Path],
                     return src_data_cache[name]
 
                 per_src_pos = per_src_path = 0
-                for rule in rules:
+                for rule in pick_rules_for_workbook(rules, src.name, g.timeline_rule_match_mode):
                     if not match_all_keywords(src.name, rule.wb_keyword):
                         continue
                     src_match_sheets = [s for s in src_sheet_names
@@ -158,3 +158,5 @@ def run_compare_com(template_path: Path, source_paths: list[Path],
     write_workbook(out_path, {"表头比对结果": diff_df, "汇总": summary_df})
     log.info(f"[COM] 完成: 源 {len(source_paths)}, 按位置 {total_pos}, 按路径 {total_path} → {out_path}")
     return out_path
+
+

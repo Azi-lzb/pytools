@@ -24,7 +24,7 @@ from .com_engine import (
 from .config_xlsx import GlobalConfig, PathMapRule, TimelineRule
 from .io_excel import append_to_target, list_source_files, write_workbook
 from .logger import get_logger
-from .rule_engine import _kw_match, extract_cells_from_arrays
+from .rule_engine import _kw_match, extract_cells_from_arrays, pick_rules_for_workbook
 from .wide_397_398 import (
     FIXED_COLS,
     FIXED_COLS_NO_ROWPATH,
@@ -78,7 +78,7 @@ def run_wide_summary_com(rules: list[TimelineRule], path_maps: list[PathMapRule]
                 log.info(f"[COM] 工作表数量 {len(all_sheets)}: {src.name}")
                 sheet_cache: dict[str, tuple[ArrayLike, tuple[tuple[int, int, int, int], ...]]] = {}
 
-                for rule in rules:
+                for rule in pick_rules_for_workbook(rules, src.name, g.timeline_rule_match_mode):
                     if getattr(rule, "set_parse_error", ""):
                         log.warning("规则[%s] set区域配置非法，已跳过: %s", rule.name, rule.set_parse_error)
                         continue

@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 
 from .config_xlsx import GlobalConfig, TimelineRule, PathMapRule
-from .rule_engine import iter_matching_sheets, extract_cells, _kw_match
+from .rule_engine import iter_matching_sheets, extract_cells, _kw_match, pick_rules_for_workbook
 from .io_excel import list_source_files, write_workbook, append_to_target
 from .logger import get_logger
 
@@ -29,7 +29,7 @@ def run_timeline_slim(rules: list[TimelineRule], path_maps: list[PathMapRule],
         rule_stats[r.name] = {"wb_miss": 0, "sheet_miss": 0, "cells": 0}
     for src in sources:
         try:
-            for rule in rules:
+            for rule in pick_rules_for_workbook(rules, src.name, g.timeline_rule_match_mode):
                 if not _kw_match(src.name, rule.wb_keyword):
                     rule_stats[rule.name]["wb_miss"] += 1
                     continue
@@ -72,12 +72,12 @@ def run_timeline_slim(rules: list[TimelineRule], path_maps: list[PathMapRule],
 
     # 写入目标簿（如果规则配置了）
     targets: dict[tuple, list[list]] = {}
-    for rule in rules:
+    for rule in pick_rules_for_workbook(rules, src.name, g.timeline_rule_match_mode):
         if rule.target_write_enabled and rule.target_wb_path and rule.target_sheet:
             targets[(rule.target_wb_path, rule.target_sheet)] = []
     if targets:
         for row in rows:
-            for rule in rules:
+            for rule in pick_rules_for_workbook(rules, src.name, g.timeline_rule_match_mode):
                 if (row[2] == rule.name and rule.target_write_enabled
                         and rule.target_wb_path and rule.target_sheet):
                     targets[(rule.target_wb_path, rule.target_sheet)].append(row)
@@ -101,3 +101,5 @@ def run_timeline_slim(rules: list[TimelineRule], path_maps: list[PathMapRule],
                     )
 
     return out_path
+
+

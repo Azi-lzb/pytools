@@ -5,7 +5,7 @@ import pandas as pd
 
 from .config_xlsx import GlobalConfig, TimelineRule
 from .io_excel import list_sheet_names, read_sheet_2d, write_workbook
-from .rule_engine import match_all_keywords, _val_str
+from .rule_engine import match_all_keywords, _val_str, pick_rules_for_workbook
 from .logger import get_logger
 
 # 输出 12 列（前 10 列结构对齐 路径标准化映射 Sheet）
@@ -162,7 +162,7 @@ def run_compare(template_path: Path, source_paths: list[Path],
             continue
 
         per_src_pos = per_src_path = 0
-        for rule in rules:
+        for rule in pick_rules_for_workbook(rules, src.name, g.timeline_rule_match_mode):
             # 工作簿关键字 AND 匹配
             if not match_all_keywords(src.name, rule.wb_keyword):
                 continue
@@ -222,3 +222,5 @@ def run_compare(template_path: Path, source_paths: list[Path],
     write_workbook(out_path, {"表头比对结果": diff_df, "汇总": summary_df})
     log.info(f"完成: 源 {len(source_paths)}, 按位置 {total_pos}, 按路径 {total_path} → {out_path}")
     return out_path
+
+

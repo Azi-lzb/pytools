@@ -114,6 +114,7 @@ class GlobalConfig:
     error_policy: str = "continue"
     default_encoding: str = "utf-8"
     source_exts: list[str] = field(default_factory=lambda: [".xlsx", ".xlsm", ".csv"])
+    timeline_rule_match_mode: str = "all_match"  # all_match / first_match
 
 
 @dataclass
@@ -276,6 +277,9 @@ def load_global(cfg_path: Path) -> GlobalConfig:
     exts = _split(kv.get("源文件扩展名", ""))
     if not exts:
         exts = [".xlsx", ".xlsm", ".csv"]
+    mode_raw = (kv.get("时序规则命中策略", "") or kv.get("规则命中策略", "")).strip().lower()
+    if mode_raw not in ("all_match", "first_match"):
+        mode_raw = "all_match"
     return GlobalConfig(
         input_dir=_path("输入目录", "input"),
         output_dir=_path("输出目录", "output"),
@@ -283,6 +287,7 @@ def load_global(cfg_path: Path) -> GlobalConfig:
         error_policy=kv.get("错误策略", "continue") or "continue",
         default_encoding=kv.get("默认编码", "utf-8") or "utf-8",
         source_exts=[e.lower() if e.startswith(".") else "." + e.lower() for e in exts],
+        timeline_rule_match_mode=mode_raw,
     )
 
 
