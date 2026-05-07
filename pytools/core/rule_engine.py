@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 from functools import lru_cache
+import re
 import pandas as pd
 from openpyxl import load_workbook
 
@@ -259,6 +260,22 @@ def _header_cell_text_with_left_fill(df, r: int, c: int,
     return ""
 
 
+_TAIL_DIGITS_RE = re.compile(r"^(.*?)(\d+)$")
+
+
+def _normalize_header_noise(curr: str, prev: str) -> str:
+    """清洗 .xls 常见列头噪声：若当前仅比前一列多尾部数字（如 境内存款1/11），归并为前一列。"""
+    if not curr or not prev:
+        return curr
+    m = _TAIL_DIGITS_RE.match(curr)
+    if not m:
+        return curr
+    base = (m.group(1) or "").strip()
+    if base and base == prev.strip():
+        return prev
+    return curr
+
+
 def _row_header_text(df, r: int, c: int, merge_ranges: tuple[tuple[int, int, int, int], ...]) -> str:
     """行头取值：先取自身；若空且为合并区域成员则取左上角。"""
     if r < 0 or c < 0 or r >= df.shape[0] or c >= df.shape[1]:
@@ -348,9 +365,15 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
 
     # 生成列头路径（按列）
     col_path_raw: dict[int, str] = {}
+    prev_by_header_row: dict[int, str] = {}
     for c in range(c_start, c_end + 1):
-        parts = [_header_cell_text_with_left_fill(df, r, c, merge_ranges) for r in ch_rows]
-        parts = [p for p in parts if p]
+        parts: list[str] = []
+        for r in ch_rows:
+            p = _header_cell_text_with_left_fill(df, r, c, merge_ranges)
+            p = _normalize_header_noise(p, prev_by_header_row.get(r, ""))
+            if p:
+                prev_by_header_row[r] = p
+                parts.append(p)
         col_path_raw[c] = "_".join(parts)
 
     # 列头同名编号（始终启用）
