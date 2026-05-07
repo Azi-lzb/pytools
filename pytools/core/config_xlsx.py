@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 import pandas as pd
 
 SHEET_GLOBAL = "全局配置"
@@ -19,9 +20,9 @@ TIMELINE_COLS = [
     "行头列", "列表头行",
     "必含列头", "必含行头",
     "数据起始行", "数据结束行", "数据起始列", "数据结束列",
-    "跳过关键字", "目标工作簿路径", "目标工作表", "启用目标写入",
+    "跳过关键字", "目标工作簿路径", "目标工作表", "启用目标写入", "set区域",
 ]
-TIMELINE_REQUIRED_COLS = [c for c in TIMELINE_COLS if c != "启用目标写入"]
+TIMELINE_REQUIRED_COLS = [c for c in TIMELINE_COLS if c not in ("启用目标写入", "set区域")]
 PATH_MAP_COLS = [
     "是否启用", "映射名称", "适用规则名",
     "工作簿关键字", "工作表关键字",
@@ -136,6 +137,8 @@ class TimelineRule:
     target_wb_path: Path | None = None
     target_sheet: str | None = None
     target_write_enabled: bool = True
+    set_items: list[tuple[str, str]] = field(default_factory=list)  # [(alias, addr)]
+    set_parse_error: str = ""
 
 
 @dataclass
@@ -189,6 +192,30 @@ def _to_str(v) -> str:
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return ""
     return str(v).strip()
+
+
+_A1_CELL_RE = re.compile(r"^[A-Za-z]+[1-9]\d*$")
+
+
+def _parse_set_items(raw) -> tuple[list[tuple[str, str]], str]:
+    """解析 set区域: 别名@地址;别名@地址。返回 (items, error_message)。"""
+    text = _to_str(raw)
+    if not text:
+        return [], ""
+    parts = [p.strip() for p in text.replace("；", ";").split(";") if p and p.strip()]
+    items: list[tuple[str, str]] = []
+    for part in parts:
+        if "@" not in part:
+            return [], f"set区域项格式非法: {part}（应为 别名@地址）"
+        alias, addr = part.split("@", 1)
+        alias = alias.strip()
+        addr = addr.strip().upper()
+        if not alias:
+            return [], f"set区域项别名为空: {part}"
+        if not _A1_CELL_RE.fullmatch(addr):
+            return [], f"set区域项地址非法: {part}"
+        items.append((alias, addr))
+    return items, ""
 
 
 def validate_sheets_for_feature(feature: str, cfg_path: Path) -> list[str]:
@@ -284,6 +311,7 @@ def load_timeline_rules(cfg_path: Path) -> list[TimelineRule]:
             target_write_enabled = _truthy(row.get("启用目标写入"))
         else:
             target_write_enabled = True
+        set_items, set_err = _parse_set_items(row.get("set区域"))
         from .rule_engine import parse_col_spec, parse_col_specs
         row_col_raw = _to_str(row.get("行头列"))
         row_col_parsed_list = parse_col_specs(row.get("行头列"))
@@ -309,6 +337,8 @@ def load_timeline_rules(cfg_path: Path) -> list[TimelineRule]:
             target_wb_path=Path(target_wb) if target_wb else None,
             target_sheet=_to_str(row.get("目标工作表")) or None,
             target_write_enabled=target_write_enabled,
+            set_items=set_items,
+            set_parse_error=set_err,
         ))
     return rules
 

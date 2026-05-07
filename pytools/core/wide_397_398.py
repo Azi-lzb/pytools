@@ -1,13 +1,15 @@
 from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
-import re
 import pandas as pd
 
 from .config_xlsx import GlobalConfig, TimelineRule, PathMapRule
 from .rule_engine import extract_cells, _kw_match
-from .io_excel import list_source_files, list_sheet_names, write_workbook, append_to_target, clear_sheet_cache
+from .io_excel import (
+    list_source_files, list_sheet_names, write_workbook, append_to_target, clear_sheet_cache, read_sheet_2d
+)
 from .logger import get_logger
+from .rule_engine import _load_merge_ranges
 
 FIXED_COLS = ["工作簿名", "工作表名", "数据日期", "行头路径"]
 FIXED_COLS_NO_ROWPATH = ["工作簿名", "工作表名", "数据日期"]
@@ -39,6 +41,29 @@ def _is_wide_rule_compatible(rule: TimelineRule, log) -> bool:
     return True
 
 
+def _disambiguate_headers(names: list[str]) -> list[str]:
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    for n in names:
+        c = seen.get(n, 0) + 1
+        seen[n] = c
+        out.append(n if c == 1 else f"{n}_{c}")
+    return out
+
+
+def _merged_value(df, merge_ranges, r: int, c: int):
+    rows_n, cols_n = df.shape
+    if r < 0 or c < 0 or r >= rows_n or c >= cols_n:
+        return None
+    v = df.iat[r, c]
+    if v is not None and not (isinstance(v, float) and pd.isna(v)):
+        return v
+    for min_r, max_r, min_c, max_c in merge_ranges:
+        if min_r <= r <= max_r and min_c <= c <= max_c:
+            return df.iat[min_r, min_c]
+    return v
+
+
 def run_wide_summary(rules: list[TimelineRule], path_maps: list[PathMapRule],
                      g: GlobalConfig, row_suffix_enabled: bool, source_paths: list[Path] | None = None) -> Path | None:
     tag = "3_9_7" if row_suffix_enabled else "3_9_8"
@@ -52,7 +77,10 @@ def run_wide_summary(rules: list[TimelineRule], path_maps: list[PathMapRule],
 
     # rule_name -> dict[(wb,sheet,date,row_path)] -> dict[col_path] -> value
     by_rule: dict[str, dict[tuple, dict[str, object]]] = {}
+    set_values_by_rule: dict[str, dict[tuple, list[object]]] = {}
     rule_output_rowpath: dict[str, bool] = {}
+    rule_set_headers: dict[str, list[str]] = {}
+    rule_set_addrs: dict[str, list[str]] = {}
     # 列顺序按首见
     col_order: dict[str, list[str]] = {}
     col_seen: dict[str, set[str]] = {}
@@ -64,6 +92,9 @@ def run_wide_summary(rules: list[TimelineRule], path_maps: list[PathMapRule],
     for src in sources:
         try:
             for rule in rules:
+                if getattr(rule, "set_parse_error", ""):
+                    log.warning("规则[%s] set区域配置非法，已跳过: %s", rule.name, rule.set_parse_error)
+                    continue
                 if not _kw_match(src.name, rule.wb_keyword):
                     rule_stats[rule.name]["wb_miss"] += 1
                     continue
@@ -74,6 +105,28 @@ def run_wide_summary(rules: list[TimelineRule], path_maps: list[PathMapRule],
                     if not _kw_match(sn, rule.sheet_keyword):
                         continue
                     hit_sheet = True
+                    if rule.name not in rule_set_headers:
+                        aliases = [x[0] for x in getattr(rule, "set_items", [])]
+                        headers = _disambiguate_headers(aliases) if aliases else []
+                        addrs = [x[1] for x in getattr(rule, "set_items", [])]
+                        rule_set_headers[rule.name] = headers
+                        rule_set_addrs[rule.name] = addrs
+                    set_headers = rule_set_headers.get(rule.name, [])
+                    set_addrs = rule_set_addrs.get(rule.name, [])
+                    set_vals: list[object] = []
+                    if set_headers and set_addrs:
+                        df_sheet = read_sheet_2d(src, sn)
+                        merge_ranges = _load_merge_ranges(str(src), sn)
+                        for addr in set_addrs:
+                            col = 0
+                            row = 0
+                            i = 0
+                            while i < len(addr) and addr[i].isalpha():
+                                col = col * 26 + (ord(addr[i].upper()) - 64)
+                                i += 1
+                            if i < len(addr):
+                                row = int(addr[i:])
+                            set_vals.append(_merged_value(df_sheet, merge_ranges, row - 1, col - 1))
                     cells = extract_cells(src, rule, sn, path_maps, row_suffix_enabled)
                     if cells:
                         rule_stats[rule.name]["cells"] += len(cells)
@@ -96,6 +149,8 @@ def run_wide_summary(rules: list[TimelineRule], path_maps: list[PathMapRule],
                         row_path_out = ec.row_path if include_row_path else ""
                         key = (ec.source_file, ec.sheet_name, ec.data_date, row_path_out, row_unique)
                         row_dict = bucket.setdefault(key, {})
+                        if set_headers and key not in set_values_by_rule.setdefault(ec.rule_name, {}):
+                            set_values_by_rule.setdefault(ec.rule_name, {})[key] = list(set_vals)
                         if ec.col_path in row_dict:
                             conflict += 1
                             log.warning(
@@ -118,14 +173,19 @@ def run_wide_summary(rules: list[TimelineRule], path_maps: list[PathMapRule],
     total_rows = 0
     for rule_name, bucket in by_rule.items():
         include_row_path = rule_output_rowpath.get(rule_name, True)
-        fixed_cols = FIXED_COLS if include_row_path else FIXED_COLS_NO_ROWPATH
+        set_headers = rule_set_headers.get(rule_name, [])
+        if include_row_path:
+            fixed_cols = ["工作簿名", "工作表名", "数据日期"] + set_headers + ["行头路径"]
+        else:
+            fixed_cols = ["工作簿名", "工作表名", "数据日期"] + set_headers
         cols = fixed_cols + col_order[rule_name]
         rows: list[list] = []
         for (wb, sn, dt, rp, _ru), m in bucket.items():
+            set_vals = set_values_by_rule.get(rule_name, {}).get((wb, sn, dt, rp, _ru), [""] * len(set_headers))
             if include_row_path:
-                row = [wb, sn, dt, rp] + [m.get(cp, "") for cp in col_order[rule_name]]
+                row = [wb, sn, dt] + list(set_vals) + [rp] + [m.get(cp, "") for cp in col_order[rule_name]]
             else:
-                row = [wb, sn, dt] + [m.get(cp, "") for cp in col_order[rule_name]]
+                row = [wb, sn, dt] + list(set_vals) + [m.get(cp, "") for cp in col_order[rule_name]]
             rows.append(row)
         df = pd.DataFrame(rows, columns=cols)
         sheets[rule_name or "未命名规则"] = df
@@ -160,7 +220,11 @@ def run_wide_summary(rules: list[TimelineRule], path_maps: list[PathMapRule],
         rs = df.values.tolist()
         # 宽表写目标按整行全列去重，避免仅按前四列导致误判。
         key_idx = list(range(len(header)))
-        required_prefix = FIXED_COLS if getattr(rule, "row_header_col_specified", True) else FIXED_COLS_NO_ROWPATH
+        set_headers = rule_set_headers.get(rule.name, [])
+        if getattr(rule, "row_header_col_specified", True):
+            required_prefix = ["工作簿名", "工作表名", "数据日期"] + set_headers + ["行头路径"]
+        else:
+            required_prefix = ["工作簿名", "工作表名", "数据日期"] + set_headers
         stat = append_to_target(rule.target_wb_path, rule.target_sheet,
                                 header, rs, dedup_key_idx=key_idx,
                                 required_prefix=required_prefix, allow_extend=True,

@@ -5,7 +5,7 @@ import pandas as pd
 from .config_xlsx import (
     SHEET_GLOBAL, SHEET_TIMELINE_RULE, SHEET_PATH_MAP,
     REQUIRED_GLOBAL_KEYS, SHEET_COL_REQUIRED,
-    load_global, _truthy, _to_str,
+    load_global, _truthy, _to_str, _parse_set_items,
 )
 from .rule_engine import parse_col_spec
 
@@ -171,6 +171,11 @@ def run_precheck(cfg_path: Path) -> int:
                 if write_flag and (not target_wb or not target_ws):
                     print(f"  [警告] 时序提取规则 第{row_no}行({name or '未命名'}): 启用目标写入=是，但目标工作簿路径/目标工作表未完整填写")
                     warns += 1
+                if "set区域" in df.columns:
+                    _, set_err = _parse_set_items(r.get("set区域"))
+                    if set_err:
+                        print(f"  [错误] 时序提取规则 第{row_no}行({name or '未命名'}): {set_err}")
+                        errs += 1
 
             for dup in sorted(dup_enabled_names):
                 print(f"  [警告] 时序提取规则: 启用规则名称重复 -> {dup}")
