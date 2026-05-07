@@ -244,6 +244,21 @@ def _header_cell_text(df, r: int, c: int, merge_ranges: tuple[tuple[int, int, in
     return _resolve_merged_top_left(df, r, c, merge_ranges)
 
 
+def _header_cell_text_with_left_fill(df, r: int, c: int,
+                                     merge_ranges: tuple[tuple[int, int, int, int], ...]) -> str:
+    """列表头兜底：若当前为空且合并信息缺失，向左回溯最近非空值（模拟横向合并展开）。"""
+    v = _header_cell_text(df, r, c, merge_ranges)
+    if v:
+        return v
+    k = c - 1
+    while k >= 0:
+        lv = _header_cell_text(df, r, k, merge_ranges)
+        if lv:
+            return lv
+        k -= 1
+    return ""
+
+
 def _row_header_text(df, r: int, c: int, merge_ranges: tuple[tuple[int, int, int, int], ...]) -> str:
     """行头取值：先取自身；若空且为合并区域成员则取左上角。"""
     if r < 0 or c < 0 or r >= df.shape[0] or c >= df.shape[1]:
@@ -325,7 +340,7 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
     ch_values_flat = []
     for r in ch_rows:
         for c in range(c_start, c_end + 1):
-            ch_values_flat.append(_header_cell_text(df, r, c, merge_ranges))
+            ch_values_flat.append(_header_cell_text_with_left_fill(df, r, c, merge_ranges))
     if row_header_specified and not _required_match(rule.required_row_headers, rh_values):
         return []
     if not _required_match(rule.required_col_headers, ch_values_flat):
@@ -334,7 +349,7 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
     # 生成列头路径（按列）
     col_path_raw: dict[int, str] = {}
     for c in range(c_start, c_end + 1):
-        parts = [_header_cell_text(df, r, c, merge_ranges) for r in ch_rows]
+        parts = [_header_cell_text_with_left_fill(df, r, c, merge_ranges) for r in ch_rows]
         parts = [p for p in parts if p]
         col_path_raw[c] = "_".join(parts)
 
