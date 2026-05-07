@@ -236,13 +236,13 @@ def _resolve_merged_top_left(df, r: int, c: int, merge_ranges: tuple[tuple[int, 
 
 
 def _header_cell_text(df, r: int, c: int, merge_ranges: tuple[tuple[int, int, int, int], ...]) -> str:
-    """表头取值：先取自身；若空且为合并区域成员则取左上角。"""
+    """表头取值：若在合并区域中，优先取合并区左上角（对齐 VBA GetMergedAwareText）。"""
     if r < 0 or c < 0 or r >= df.shape[0] or c >= df.shape[1]:
         return ""
-    v = _val_str(df.iat[r, c])
-    if v:
-        return v
-    return _resolve_merged_top_left(df, r, c, merge_ranges)
+    mv = _resolve_merged_top_left(df, r, c, merge_ranges)
+    if mv:
+        return mv
+    return _val_str(df.iat[r, c])
 
 
 def _header_cell_text_with_left_fill(df, r: int, c: int,
@@ -290,10 +290,11 @@ def _normalize_header_row_noise(texts: list[str]) -> list[str]:
     """整行修正 .xls 表头污染。
 
     典型脏值：
-    - 境内存款 / 境内存款1 / 境内存款11
-    - 活期存款2 / 活期存款21 / 活期存款211
+    - 境内存款 / 境内存款1 / 境内存款11 -> 统一成 境内存款
+    - 活期存款2 / 活期存款21 / 活期存款211 -> 统一成 活期存款2
 
-    若一段连续列满足“后一列 = 前一列 + 纯数字后缀”，则整段统一归并为去尾数后的 base。
+    规则：若一段连续列满足“后一列 = 前一列 + 纯数字后缀”，
+    则整段统一归并为这段链的首个值，而不是去掉所有尾数。
     """
     if not texts:
         return texts
@@ -305,14 +306,12 @@ def _normalize_header_row_noise(texts: list[str]) -> list[str]:
         if not curr:
             i += 1
             continue
-        base = _strip_tail_digits(curr)
+        anchor = curr
         j = i + 1
         prev = curr
         chain_ok = False
         while j < n and out[j]:
             nxt = out[j]
-            if _strip_tail_digits(nxt) != base:
-                break
             if nxt.startswith(prev) and nxt != prev and nxt[len(prev):].isdigit():
                 chain_ok = True
                 prev = nxt
@@ -321,7 +320,7 @@ def _normalize_header_row_noise(texts: list[str]) -> list[str]:
             break
         if chain_ok:
             for k in range(i, j):
-                out[k] = base
+                out[k] = anchor
             i = j
         else:
             i += 1
@@ -329,13 +328,13 @@ def _normalize_header_row_noise(texts: list[str]) -> list[str]:
 
 
 def _row_header_text(df, r: int, c: int, merge_ranges: tuple[tuple[int, int, int, int], ...]) -> str:
-    """行头取值：先取自身；若空且为合并区域成员则取左上角。"""
+    """行头取值：若在合并区域中，优先取合并区左上角（对齐 VBA GetMergedAwareText）。"""
     if r < 0 or c < 0 or r >= df.shape[0] or c >= df.shape[1]:
         return ""
-    v = _val_str(df.iat[r, c])
-    if v:
-        return v
-    return _resolve_merged_top_left(df, r, c, merge_ranges)
+    mv = _resolve_merged_top_left(df, r, c, merge_ranges)
+    if mv:
+        return mv
+    return _val_str(df.iat[r, c])
 
 
 def iter_matching_sheets(source_path: Path, rules: list[TimelineRule]
@@ -360,12 +359,49 @@ def extract_cells(source_path: Path, rule: TimelineRule, sheet_name: str,
 
 def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: TimelineRule,
                               sheet_name: str, path_maps: list[PathMapRule],
-                              row_suffix_enabled: bool) -> list[ExtractedCell]:
+                              row_suffix_enabled: bool,
+                              cell_text_overrides: dict[tuple[int, int], str] | None = None
+                              ) -> list[ExtractedCell]:
     """与 extract_cells 同口径，但数据源为已加载的 df（pandas.DataFrame 或 com_engine.ArrayLike）
     + merge_ranges 合并区域元组。供 COM 引擎复用同一套计算逻辑。"""
     rows, cols = df.shape
     if rows == 0 or cols == 0:
         return []
+    cell_text_overrides = cell_text_overrides or {}
+
+    def _has_override(r: int, c: int) -> bool:
+        return (r, c) in cell_text_overrides
+
+    def _override_text(r: int, c: int) -> str:
+        return cell_text_overrides[(r, c)]
+
+    def _header_text_override(r: int, c: int) -> str:
+        if _has_override(r, c):
+            return _override_text(r, c)
+        return _header_cell_text(df, r, c, merge_ranges)
+
+    def _header_text_with_left_fill_override(r: int, c: int) -> str:
+        if _has_override(r, c):
+            return _override_text(r, c)
+        v = _header_text_override(r, c)
+        if v:
+            return v
+        # 只有在拿不到合并信息时才做向左补齐。
+        # 若 merge_ranges 可用，空值通常是“明确的空白分组”，不应继承左侧标题。
+        if merge_ranges:
+            return ""
+        k = c - 1
+        while k >= 0:
+            lv = _header_text_override(r, k)
+            if lv:
+                return lv
+            k -= 1
+        return ""
+
+    def _row_text_override(r: int, c: int) -> str:
+        if _has_override(r, c):
+            return _override_text(r, c)
+        return _row_header_text(df, r, c, merge_ranges)
 
     a1 = _val_str(df.iat[0, 0]) if rows > 0 and cols > 0 else ""
     data_date, _src = parse_data_date(source_path.name, a1)
@@ -403,7 +439,7 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
     header_row_texts: dict[int, list[str]] = {}
     for r in ch_rows:
         row_texts = [
-            _header_cell_text_with_left_fill(df, r, c, merge_ranges)
+            _header_text_with_left_fill_override(r, c)
             for c in range(c_start, c_end + 1)
         ]
         header_row_texts[r] = _normalize_header_row_noise(row_texts)
@@ -412,7 +448,7 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
     rh_values = []
     if row_header_specified:
         for r in range(r_start, r_end + 1):
-            parts = [_row_header_text(df, r, c, merge_ranges) for c in rh_cols]
+            parts = [_row_text_override(r, c) for c in rh_cols]
             parts = [p for p in parts if p]
             rh_values.append("_".join(parts))
     ch_values_flat = []
@@ -436,23 +472,20 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
         col_path_raw[c] = "_".join(parts)
 
     # 列头同名编号（始终启用）
-    col_path_final: dict[int, str] = {}
-    seen_col: dict[str, int] = {}
-    for c, p in col_path_raw.items():
-        if not p:
-            col_path_final[c] = _fallback_col_path(c)
-            continue
-        seen_col[p] = seen_col.get(p, 0) + 1
-        col_path_final[c] = f"{p}_{seen_col[p]}" if seen_col[p] > 1 else p
-        # 但若该路径在整个 sheet 只出现一次，保持原样
-    # 重新核对——若某 raw path 全程只出现一次，去掉 _1
     raw_count: dict[str, int] = {}
     for p in col_path_raw.values():
         if p:
             raw_count[p] = raw_count.get(p, 0) + 1
-    for c, p in list(col_path_final.items()):
-        raw = col_path_raw[c]
-        if raw and raw_count[raw] == 1:
+    col_path_final: dict[int, str] = {}
+    seen_col: dict[str, int] = {}
+    for c, raw in col_path_raw.items():
+        if not raw:
+            col_path_final[c] = _fallback_col_path(c)
+            continue
+        seen_col[raw] = seen_col.get(raw, 0) + 1
+        if raw_count.get(raw, 0) > 1:
+            col_path_final[c] = f"{raw}_{seen_col[raw]}"
+        else:
             col_path_final[c] = raw
 
     # 行头同名处理
@@ -461,7 +494,7 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
     raw_row_count: dict[str, int] = {}
     for r in range(r_start, r_end + 1):
         if row_header_specified:
-            parts = [_row_header_text(df, r, c, merge_ranges) for c in rh_cols]
+            parts = [_row_text_override(r, c) for c in rh_cols]
             parts = [p for p in parts if p]
             p = "_".join(parts)
         else:
@@ -470,7 +503,7 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
             raw_row_count[p] = raw_row_count.get(p, 0) + 1
     for r in range(r_start, r_end + 1):
         if row_header_specified:
-            parts = [_row_header_text(df, r, c, merge_ranges) for c in rh_cols]
+            parts = [_row_text_override(r, c) for c in rh_cols]
             parts = [p for p in parts if p]
             raw = "_".join(parts)
         else:

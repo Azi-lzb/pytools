@@ -15,6 +15,7 @@ from .com_engine import (
     get_merge_ranges_com,
     list_sheet_names_com,
     open_readonly,
+    read_merged_aware_texts,
     read_sheet_values,
     safe_close,
     safe_quit,
@@ -25,6 +26,38 @@ from .io_excel import append_to_target, list_source_files, write_workbook
 from .logger import get_logger
 from .rule_engine import _kw_match, extract_cells_from_arrays, pick_rules_for_workbook
 from .timeline_396 import SLIM_COLS
+
+
+def _build_header_coords(rule: TimelineRule, rows_n: int, cols_n: int) -> tuple[list[tuple[int, int]], tuple]:
+    r_start = rule.data_row_start - 1 if rule.data_row_start else max(r - 1 for r in rule.col_header_rows) + 1
+    r_end = (rule.data_row_end - 1) if rule.data_row_end else rows_n - 1
+    c_start = rule.data_col_start - 1 if rule.data_col_start else (
+        (max((c - 1 for c in getattr(rule, "row_header_cols", []) if c > 0), default=-1) + 1)
+        if getattr(rule, "row_header_col_specified", True) else 0
+    )
+    c_end = (rule.data_col_end - 1) if rule.data_col_end else cols_n - 1
+    header_rows = [r - 1 for r in rule.col_header_rows if 0 < r <= rows_n]
+    row_header_cols = [c - 1 for c in getattr(rule, "row_header_cols", []) if 0 < c <= cols_n]
+    if not row_header_cols and getattr(rule, "row_header_col_specified", True):
+        if rule.row_header_col > 0 and rule.row_header_col <= cols_n:
+            row_header_cols = [rule.row_header_col - 1]
+
+    coords_set: set[tuple[int, int]] = set()
+    for r0 in header_rows:
+        for c0 in range(max(c_start, 0), min(c_end, cols_n - 1) + 1):
+            coords_set.add((r0, c0))
+    if getattr(rule, "row_header_col_specified", True):
+        for r0 in range(max(r_start, 0), min(r_end, rows_n - 1) + 1):
+            for c0 in row_header_cols:
+                coords_set.add((r0, c0))
+    sig = (
+        tuple(sorted(header_rows)),
+        max(r_start, 0), min(r_end, rows_n - 1),
+        max(c_start, 0), min(c_end, cols_n - 1),
+        tuple(sorted(row_header_cols)),
+        bool(getattr(rule, "row_header_col_specified", True)),
+    )
+    return list(coords_set), sig
 
 
 def run_timeline_slim_com(rules: list[TimelineRule], path_maps: list[PathMapRule],
@@ -57,23 +90,32 @@ def run_timeline_slim_com(rules: list[TimelineRule], path_maps: list[PathMapRule
             try:
                 all_sheets = list_sheet_names_com(src_wb)
                 sheet_cache: dict[str, tuple[ArrayLike, tuple[tuple[int, int, int, int], ...]]] = {}
+                ws_cache: dict[str, object] = {}
 
+                matched_by_rule: dict[str, list[str]] = {}
                 for rule in pick_rules_for_workbook(rules, src.name, g.timeline_rule_match_mode):
                     if not _kw_match(src.name, rule.wb_keyword):
                         rule_stats[rule.name]["wb_miss"] += 1
                         continue
+                    matched_by_rule[rule.name] = [sn for sn in all_sheets if _kw_match(sn, rule.sheet_keyword)]
+
+                for rule in pick_rules_for_workbook(rules, src.name, g.timeline_rule_match_mode):
                     hit_sheet = False
-                    for sn in all_sheets:
-                        if not _kw_match(sn, rule.sheet_keyword):
-                            continue
+                    for sn in matched_by_rule.get(rule.name, []):
                         hit_sheet = True
                         if sn not in sheet_cache:
                             ws = src_wb.Worksheets(sn)
+                            ws_cache[sn] = ws
                             sheet_cache[sn] = (read_sheet_values(ws), get_merge_ranges_com(ws))
+                        ws = ws_cache[sn]
                         df, merge_ranges = sheet_cache[sn]
+                        rows_n, cols_n = df.shape
+                        coords, _sig = _build_header_coords(rule, rows_n, cols_n)
+                        cell_text_overrides = read_merged_aware_texts(ws, coords)
                         cells = extract_cells_from_arrays(
                             df, merge_ranges, src, rule, sn, path_maps,
                             row_suffix_enabled=True,
+                            cell_text_overrides=cell_text_overrides,
                         )
                         if cells:
                             matched_sheets += 1

@@ -101,6 +101,38 @@ def read_sheet_values(ws) -> ArrayLike:
     return ArrayLike([list(row) for row in v])
 
 
+def read_merged_aware_texts(ws, coords: list[tuple[int, int]]) -> dict[tuple[int, int], str]:
+    """按 0-based 坐标批量读取文本；命中合并区域时取左上角文本。
+
+    只读取少量指定坐标，避免 `.xls` 下 `MergeAreas` 不可用时回退全表扫描。
+    """
+    out: dict[tuple[int, int], str] = {}
+    seen: set[tuple[int, int]] = set()
+    for r0, c0 in coords:
+        if r0 < 0 or c0 < 0:
+            continue
+        key = (r0, c0)
+        if key in seen:
+            continue
+        seen.add(key)
+        text = ""
+        try:
+            cell = ws.Cells(r0 + 1, c0 + 1)
+            try:
+                if bool(cell.MergeCells):
+                    v = cell.MergeArea.Cells(1, 1).Value
+                else:
+                    v = cell.Value
+            except Exception:
+                v = cell.Value
+            if v is not None:
+                text = str(v).strip()
+        except Exception:
+            text = ""
+        out[key] = text
+    return out
+
+
 def get_merge_ranges_com(ws) -> tuple[tuple[int, int, int, int], ...]:
     """从当前 COM worksheet 读取合并区域，返回 0-based 坐标元组。"""
     ranges: list[tuple[int, int, int, int]] = []

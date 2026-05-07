@@ -117,6 +117,10 @@ def _write_values_com(dst_ws, values: list[list]) -> None:
     dst_ws.Range(dst_ws.Cells(1, 1), dst_ws.Cells(nrow, ncol)).Value2 = payload
 
 
+def _is_blank_spec(spec: str) -> bool:
+    return str(spec or "").strip() == ""
+
+
 def run_extract_sheets_com(target_wbs: Iterable[Path], tasks: list[dict],
                            output_dir: Path, log_dir: Path) -> dict:
     logger = get_logger("feature_1_6_extract_sheets_com", log_dir)
@@ -187,6 +191,26 @@ def run_extract_sheets_com(target_wbs: Iterable[Path], tasks: list[dict],
                             except Exception as e:
                                 logger.warning(f"整表 Copy 失败: {e}")
                         else:
+                            # COM 场景下，未指定 rows/cols 时直接复制 UsedRange，保留合并/边框等格式
+                            if _is_blank_spec(task.get("rows_spec", "")) and _is_blank_spec(task.get("cols_spec", "")):
+                                try:
+                                    new_ws = wb_out.Worksheets.Add(
+                                        After=wb_out.Worksheets(wb_out.Worksheets.Count)
+                                    )
+                                    try:
+                                        new_ws.Name = sheet_title
+                                    except Exception:
+                                        pass
+                                    src_sheet.UsedRange.Copy(new_ws.Range("A1"))
+                                    stat["extracted_sheets"] += 1
+                                    logger.info(
+                                        f"  UsedRange复制: {src.name} | {src_title} -> "
+                                        f"{out_name}.xlsx[{sheet_title}]"
+                                    )
+                                    continue
+                                except Exception as e:
+                                    logger.warning(f"UsedRange 复制失败，回退值提取: {e}")
+
                             # 部分提取（rows/cols spec），按值视图
                             data = _read_full_2d(src_sheet)
                             values = _extract_values(

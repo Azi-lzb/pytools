@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import copy
 import re
 from datetime import datetime
 from pathlib import Path
@@ -177,6 +178,51 @@ def _write_values(ws_out, values: list[list]) -> None:
                 ws_out.cell(row=i, column=j, value=v)
 
 
+def _is_blank_spec(spec: str) -> bool:
+    return str(spec or "").strip() == ""
+
+
+def _is_full_sheet_task(task: dict) -> bool:
+    return bool(task.get("full_extract")) or (
+        _is_blank_spec(task.get("rows_spec", "")) and _is_blank_spec(task.get("cols_spec", ""))
+    )
+
+
+def _copy_full_sheet_with_style(ws_src, ws_out) -> bool:
+    """复制整表：值+样式+合并+行高列宽。"""
+    max_r = ws_src.max_row or 0
+    max_c = ws_src.max_column or 0
+    if max_r == 0 or max_c == 0:
+        return False
+
+    for r in range(1, max_r + 1):
+        for c in range(1, max_c + 1):
+            src_cell = ws_src.cell(row=r, column=c)
+            dst_cell = ws_out.cell(row=r, column=c, value=src_cell.value)
+            if src_cell.has_style:
+                dst_cell._style = copy(src_cell._style)
+            if src_cell.number_format is not None:
+                dst_cell.number_format = src_cell.number_format
+            if src_cell.protection is not None:
+                dst_cell.protection = copy(src_cell.protection)
+            if src_cell.alignment is not None:
+                dst_cell.alignment = copy(src_cell.alignment)
+
+    for col_key, col_dim in ws_src.column_dimensions.items():
+        ws_out.column_dimensions[col_key].width = col_dim.width
+        ws_out.column_dimensions[col_key].hidden = col_dim.hidden
+        ws_out.column_dimensions[col_key].outlineLevel = col_dim.outlineLevel
+
+    for row_idx, row_dim in ws_src.row_dimensions.items():
+        ws_out.row_dimensions[row_idx].height = row_dim.height
+        ws_out.row_dimensions[row_idx].hidden = row_dim.hidden
+        ws_out.row_dimensions[row_idx].outlineLevel = row_dim.outlineLevel
+
+    for merged in ws_src.merged_cells.ranges:
+        ws_out.merge_cells(str(merged))
+    return True
+
+
 def _remove_default_blank(wb) -> None:
     if len(wb.sheetnames) > 1:
         first = wb.worksheets[0]
@@ -224,17 +270,24 @@ def run_extract_sheets(target_wbs: Iterable[Path], tasks: list[dict],
                 wb_out = out_wbs[out_name]
 
                 for ws_src in matched:
-                    data = _read_ws_values(ws_src)
-                    values = _extract_values(data, task["rows_spec"],
-                                             task["cols_spec"], task["full_extract"])
-                    values = _compact(values)
-                    if not values:
-                        logger.info(f"  [skip] {src.name} | {ws_src.title} 无数据")
-                        continue
-
                     sheet_title = _unique_sheet_name(wb_out, ws_src.title)
                     ws_out = wb_out.create_sheet(title=sheet_title)
-                    _write_values(ws_out, values)
+                    if _is_full_sheet_task(task):
+                        ok = _copy_full_sheet_with_style(ws_src, ws_out)
+                        if not ok:
+                            wb_out.remove(ws_out)
+                            logger.info(f"  [skip] {src.name} | {ws_src.title} 无数据")
+                            continue
+                    else:
+                        data = _read_ws_values(ws_src)
+                        values = _extract_values(data, task["rows_spec"],
+                                                 task["cols_spec"], task["full_extract"])
+                        values = _compact(values)
+                        if not values:
+                            wb_out.remove(ws_out)
+                            logger.info(f"  [skip] {src.name} | {ws_src.title} 无数据")
+                            continue
+                        _write_values(ws_out, values)
                     stat["extracted_sheets"] += 1
                     logger.info(
                         f"  提取: {src.name} | {ws_src.title} -> {out_name}.xlsx[{sheet_title}]"

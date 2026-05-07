@@ -64,6 +64,11 @@ from pytools.core.feature_1_6_extract_sheets import run_extract_sheets
 from pytools.core.feature_1_8_adjust_rural_loan import run_adjust_rural_loan
 from pytools.core.feature_1_4_fx_header_com import run_fx_header_fix_com
 from pytools.core.feature_1_6_extract_sheets_com import run_extract_sheets_com
+from pytools.core.feature_1_1_split_village_bank_com import run_split_village_bank_com
+from pytools.core.feature_1_2_normalize_institution_com import run_normalize_institution_com
+from pytools.core.feature_1_3_remove_foreign_bank_com import run_remove_foreign_bank_com
+from pytools.core.feature_1_5_region_sum_check_com import run_region_sum_check_com
+from pytools.core.feature_1_8_adjust_rural_loan_com import run_adjust_rural_loan_com
 
 def _app_base_dir() -> Path:
 
@@ -90,15 +95,13 @@ MAIN_MENU = """
 
 PENDING_MENU = """
 ------ 一二批处理工具 ------
-  1  拆分村镇银行数据
-  2  机构名称标准化
-  3  删除分机构表的外资行
-  4  外汇页眉修改
-  5  地区总分校验
-  6  提取工作表数据
-  7  涉农贷款比上月修正
-  8  [自动路由COM] 外汇页眉修改
-  9  [自动路由COM] 提取工作表数据
+  1  [自动路由COM] 拆分村镇银行数据
+  2  [自动路由COM] 机构名称标准化
+  3  [自动路由COM] 删除分机构表的外资行
+  4  [自动路由COM] 外汇页眉修改
+  5  [自动路由COM] 地区总分校验
+  6  [自动路由COM] 提取工作表数据
+  7  [自动路由COM] 涉农贷款比上月修正
   0  返回
 ------------------------
 """
@@ -852,14 +855,35 @@ def dispatch(choice: str) -> None:
         if not srcs:
             print("[已取消]")
             return
-        stat = run_split_village_bank(curr, prev, srcs, g.log_dir)
-        if stat.get("matrix_empty"):
-            print("[已中止] 村镇银行计算结果为空")
-        else:
-            print(
-                f"[完成] 文件={stat['files']} 分机构sheet={stat['branch_sheets']} "
-                f"填入={stat['filled_sheets']} 跳过={stat['skipped_sheets']} 失败={stat['failed_files']}"
-            )
+        normal_srcs, com_srcs = _split_sources_for_auto_route(srcs)
+        print(f"→ 自动路由：非COM={len(normal_srcs)}，COM(.xls)={len(com_srcs)}")
+        normal_curr = curr if curr.suffix.lower() != ".xls" else None
+        normal_prev = prev if prev.suffix.lower() != ".xls" else None
+        com_curr = curr if curr.suffix.lower() == ".xls" else None
+        com_prev = prev if prev.suffix.lower() == ".xls" else None
+        if com_srcs and (com_curr is None or com_prev is None):
+            print("[提示] 目标含 .xls，但本期/上期不是 .xls，COM 分支跳过。")
+        if normal_srcs:
+            stat = run_split_village_bank(curr, prev, normal_srcs, g.log_dir)
+            if stat.get("matrix_empty"):
+                print("[已中止] 非COM 村镇银行计算结果为空")
+            else:
+                print(
+                    f"[完成] 非COM 文件={stat['files']} 分机构sheet={stat['branch_sheets']} "
+                    f"填入={stat['filled_sheets']} 跳过={stat['skipped_sheets']} 失败={stat['failed_files']}"
+                )
+        if com_srcs and com_curr is not None and com_prev is not None:
+            try:
+                stat = run_split_village_bank_com(com_curr, com_prev, com_srcs, g.log_dir)
+                if stat.get("matrix_empty"):
+                    print("[已中止] COM 村镇银行计算结果为空")
+                else:
+                    print(
+                        f"[完成] COM 文件={stat['files']} 分机构sheet={stat['branch_sheets']} "
+                        f"填入={stat['filled_sheets']} 跳过={stat['skipped_sheets']} 失败={stat['failed_files']}"
+                    )
+            except RuntimeError as e:
+                print(f"[COM 不可用] {e}")
     elif choice == "x12":
         mapping = load_institution_mapping(CFG_PATH)
         if not mapping:
@@ -869,15 +893,25 @@ def dispatch(choice: str) -> None:
         if not srcs:
             print("[已取消]")
             return
-        stat = run_normalize_institution(srcs, mapping, g.log_dir)
-        if stat.get("mapping_empty"):
-            print("[已中止] 机构映射表为空")
-        else:
+        normal_srcs, com_srcs = _split_sources_for_auto_route(srcs)
+        print(f"→ 自动路由：非COM={len(normal_srcs)}，COM(.xls)={len(com_srcs)}")
+        if normal_srcs:
+            stat = run_normalize_institution(normal_srcs, mapping, g.log_dir)
             print(
-                f"[完成] 文件={stat['files']} 分机构sheet={stat['branch_sheets']} "
+                f"[完成] 非COM 文件={stat['files']} 分机构sheet={stat['branch_sheets']} "
                 f"命中sheet={stat['mapped_sheets']} 修改行={stat['mapped_rows']} "
                 f"失败={stat['failed_files']}"
             )
+        if com_srcs:
+            try:
+                stat = run_normalize_institution_com(com_srcs, mapping, g.log_dir)
+                print(
+                    f"[完成] COM 文件={stat['files']} 分机构sheet={stat['branch_sheets']} "
+                    f"命中sheet={stat['mapped_sheets']} 修改行={stat['mapped_rows']} "
+                    f"失败={stat['failed_files']}"
+                )
+            except RuntimeError as e:
+                print(f"[COM 不可用] {e}")
     elif choice == "x13":
         foreign_set = load_foreign_banks(CFG_PATH)
         if not foreign_set:
@@ -887,15 +921,25 @@ def dispatch(choice: str) -> None:
         if not srcs:
             print("[已取消]")
             return
-        stat = run_remove_foreign_bank(srcs, foreign_set, g.log_dir)
-        if stat.get("foreign_empty"):
-            print("[已中止] 外资行配置为空")
-        else:
+        normal_srcs, com_srcs = _split_sources_for_auto_route(srcs)
+        print(f"→ 自动路由：非COM={len(normal_srcs)}，COM(.xls)={len(com_srcs)}")
+        if normal_srcs:
+            stat = run_remove_foreign_bank(normal_srcs, foreign_set, g.log_dir)
             print(
-                f"[完成] 文件={stat['files']} 成功={stat['ok_files']} "
+                f"[完成] 非COM 文件={stat['files']} 成功={stat['ok_files']} "
                 f"分机构sheet={stat['branch_sheets']} 删除行={stat['deleted_rows']} "
                 f"失败={stat['failed_files']}"
             )
+        if com_srcs:
+            try:
+                stat = run_remove_foreign_bank_com(com_srcs, foreign_set, g.log_dir)
+                print(
+                    f"[完成] COM 文件={stat['files']} 成功={stat['ok_files']} "
+                    f"分机构sheet={stat['branch_sheets']} 删除行={stat['deleted_rows']} "
+                    f"失败={stat['failed_files']}"
+                )
+            except RuntimeError as e:
+                print(f"[COM 不可用] {e}")
     elif choice == "x14":
         srcs = _pick_source_files("选择要修改外汇页眉的Excel文件（可多选）")
         if not srcs:
@@ -912,11 +956,23 @@ def dispatch(choice: str) -> None:
         if not srcs:
             print("[已取消]")
             return
-        stat = run_region_sum_check(srcs, g.output_dir, g.log_dir)
-        print(
-            f"[完成] 文件={stat['files']} 工作表={stat['sheets']} "
-            f"错误={stat['errors']} 失败={stat['failed_files']} 输出={stat['path']}"
-        )
+        normal_srcs, com_srcs = _split_sources_for_auto_route(srcs)
+        print(f"→ 自动路由：非COM={len(normal_srcs)}，COM(.xls)={len(com_srcs)}")
+        if normal_srcs:
+            stat = run_region_sum_check(normal_srcs, g.output_dir, g.log_dir)
+            print(
+                f"[完成] 非COM 文件={stat['files']} 工作表={stat['sheets']} "
+                f"错误={stat['errors']} 失败={stat['failed_files']} 输出={stat['path']}"
+            )
+        if com_srcs:
+            try:
+                stat = run_region_sum_check_com(com_srcs, g.output_dir, g.log_dir)
+                print(
+                    f"[完成] COM 文件={stat['files']} 工作表={stat['sheets']} "
+                    f"错误={stat['errors']} 失败={stat['failed_files']} 输出={stat['path']}"
+                )
+            except RuntimeError as e:
+                print(f"[COM 不可用] {e}")
     elif choice == "x16":
         tasks = load_extract_tasks(CFG_PATH)
         if not tasks:
@@ -996,7 +1052,16 @@ def dispatch(choice: str) -> None:
         if not prev:
             print("[已取消]")
             return
-        r = run_adjust_rural_loan(cur, prev, g.log_dir)
+        normal_files, com_files = _split_sources_for_auto_route([cur, prev])
+        print(f"→ 自动路由：非COM={len(normal_files)}，COM(.xls)={len(com_files)}")
+        try:
+            if cur.suffix.lower() == ".xls" or prev.suffix.lower() == ".xls":
+                r = run_adjust_rural_loan_com(cur, prev, g.log_dir)
+            else:
+                r = run_adjust_rural_loan(cur, prev, g.log_dir)
+        except RuntimeError as e:
+            print(f"[COM 不可用] {e}")
+            return
         if r["error"]:
             print(f"[失败] {r['error']}")
         else:
@@ -1067,12 +1132,11 @@ def main() -> None:
                 continue
             mapped = {"1": "s21", "2": "s22", "3": "s21com", "4": "s22com"}[sub]
         elif main_choice == "7":
-            sub = _show_sub_menu(PENDING_MENU, ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"))
+            sub = _show_sub_menu(PENDING_MENU, ("1", "2", "3", "4", "5", "6", "7", "0"))
             if sub == "0":
                 continue
-            mapped = {"1": "x11", "2": "x12", "3": "x13", "4": "x14",
-                      "5": "x15", "6": "x16", "7": "x18",
-                      "8": "x14com", "9": "x16com"}[sub]
+            mapped = {"1": "x11", "2": "x12", "3": "x13", "4": "x14com",
+                      "5": "x15", "6": "x16com", "7": "x18"}[sub]
         else:
             sub = _show_sub_menu(SURVEY_MENU, ("1", "0"))
             if sub == "0":
