@@ -4,7 +4,12 @@ from pathlib import Path
 import pandas as pd
 
 from .config_xlsx import GlobalConfig, TimelineRule, PathMapRule
-from .rule_engine import extract_cells, _kw_match, pick_rules_for_workbook
+from .rule_engine import (
+    extract_cells,
+    _kw_match,
+    pick_rules_for_workbook,
+    compute_wide_col_paths_from_arrays,
+)
 from .io_excel import (
     list_source_files, list_sheet_names, write_workbook, append_to_target, clear_sheet_cache, read_sheet_2d
 )
@@ -127,16 +132,57 @@ def run_wide_summary(rules: list[TimelineRule], path_maps: list[PathMapRule],
                             if i < len(addr):
                                 row = int(addr[i:])
                             set_vals.append(_merged_value(df_sheet, merge_ranges, row - 1, col - 1))
+                    rows_n, cols_n = (0, 0)
+                    if set_headers and set_addrs:
+                        rows_n, cols_n = df_sheet.shape
+                    else:
+                        df_sheet = read_sheet_2d(src, sn)
+                        merge_ranges = _load_merge_ranges(str(src), sn)
+                        rows_n, cols_n = df_sheet.shape
+                    if rows_n > 0 and cols_n > 0:
+                        row_header_specified = getattr(rule, "row_header_col_specified", True)
+                        rh_cols_cfg = getattr(rule, "row_header_cols", None)
+                        if row_header_specified:
+                            if rh_cols_cfg:
+                                rh_cols = [c - 1 for c in rh_cols_cfg if c > 0]
+                            else:
+                                rh_cols = [rule.row_header_col - 1]
+                        else:
+                            rh_cols = []
+                        ch_rows = [r - 1 for r in rule.col_header_rows if 0 < r <= rows_n]
+                        if ch_rows:
+                            r_start = rule.data_row_start - 1 if rule.data_row_start else max(ch_rows) + 1
+                            c_start = (
+                                rule.data_col_start - 1
+                                if rule.data_col_start
+                                else ((max(rh_cols) + 1) if row_header_specified and rh_cols else 0)
+                            )
+                            c_end = (rule.data_col_end - 1) if rule.data_col_end else cols_n - 1
+                            c_start = max(c_start, 0)
+                            c_end = min(c_end, cols_n - 1)
+                            if r_start <= rows_n - 1 and c_start <= c_end:
+                                _, ordered_cols = compute_wide_col_paths_from_arrays(
+                                    df_sheet,
+                                    merge_ranges,
+                                    rule,
+                                    sn,
+                                    path_maps,
+                                    src.name,
+                                    c_start=c_start,
+                                    c_end=c_end,
+                                    ch_rows=ch_rows,
+                                )
+                                cs = col_seen.setdefault(rule.name, set())
+                                co = col_order.setdefault(rule.name, [])
+                                for cp in ordered_cols:
+                                    if cp not in cs:
+                                        cs.add(cp)
+                                        co.append(cp)
                     cells = extract_cells(src, rule, sn, path_maps, row_suffix_enabled)
                     if cells:
                         rule_stats[rule.name]["cells"] += len(cells)
                     for ec in cells:
                         bucket = by_rule.setdefault(ec.rule_name, {})
-                        cs = col_seen.setdefault(ec.rule_name, set())
-                        co = col_order.setdefault(ec.rule_name, [])
-                        if ec.col_path not in cs:
-                            cs.add(ec.col_path)
-                            co.append(ec.col_path)
                         # 3.9.8（行头不加后缀）时，行头文本可能重复；
                         # 这里内部增加源行号，避免不同数据行被错误压并为同一行。
                         row_no = _row_no_from_addr(ec.cell_addr)

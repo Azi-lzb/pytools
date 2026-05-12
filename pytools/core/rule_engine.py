@@ -357,6 +357,120 @@ def extract_cells(source_path: Path, rule: TimelineRule, sheet_name: str,
                                      sheet_name, path_maps, row_suffix_enabled)
 
 
+def compute_wide_col_paths_from_arrays(
+    df,
+    merge_ranges,
+    rule: TimelineRule,
+    sheet_name: str,
+    path_maps: list[PathMapRule],
+    wb_name: str,
+    *,
+    c_start: int,
+    c_end: int,
+    ch_rows: list[int],
+    cell_text_overrides: dict[tuple[int, int], str] | None = None,
+) -> tuple[dict[int, str], list[str]]:
+    """按列坐标左到右构建列头路径（含同名消歧与列头映射）。"""
+    cell_text_overrides = cell_text_overrides or {}
+
+    def _has_override(r: int, c: int) -> bool:
+        return (r, c) in cell_text_overrides
+
+    def _override_text(r: int, c: int) -> str:
+        return cell_text_overrides[(r, c)]
+
+    def _header_text_override(r: int, c: int) -> str:
+        if _has_override(r, c):
+            return _override_text(r, c)
+        return _header_cell_text(df, r, c, merge_ranges)
+
+    def _header_text_with_left_fill_override(r: int, c: int) -> str:
+        if _has_override(r, c):
+            return _override_text(r, c)
+        v = _header_text_override(r, c)
+        if v:
+            return v
+        if merge_ranges:
+            return ""
+        k = c - 1
+        while k >= 0:
+            lv = _header_text_override(r, k)
+            if lv:
+                return lv
+            k -= 1
+        return ""
+
+    header_row_texts: dict[int, list[str]] = {}
+    for r in ch_rows:
+        row_texts = [
+            _header_text_with_left_fill_override(r, c)
+            for c in range(c_start, c_end + 1)
+        ]
+        header_row_texts[r] = row_texts
+
+    col_path_raw: dict[int, str] = {}
+    for c in range(c_start, c_end + 1):
+        parts: list[str] = []
+        c0 = c - c_start
+        for r in ch_rows:
+            row_texts = header_row_texts.get(r, [])
+            p = row_texts[c0] if 0 <= c0 < len(row_texts) else ""
+            if p:
+                parts.append(p)
+        col_path_raw[c] = "_".join(parts)
+
+    raw_count: dict[str, int] = {}
+    for p in col_path_raw.values():
+        if p:
+            raw_count[p] = raw_count.get(p, 0) + 1
+    col_path_final: dict[int, str] = {}
+    seen_col: dict[str, int] = {}
+    for c, raw in col_path_raw.items():
+        if not raw:
+            col_path_final[c] = _fallback_col_path(c)
+            continue
+        seen_col[raw] = seen_col.get(raw, 0) + 1
+        if raw_count.get(raw, 0) > 1:
+            col_path_final[c] = f"{raw}_{seen_col[raw]}"
+        else:
+            col_path_final[c] = raw
+
+    def _filter_maps(target: str) -> list[PathMapRule]:
+        out_maps: list[PathMapRule] = []
+        for m in path_maps:
+            if m.applicable_rule and m.applicable_rule != rule.name:
+                continue
+            if m.target not in (target, "两者", ""):
+                continue
+            if not _match_kw(m.wb_keyword, wb_name):
+                continue
+            if not _match_kw(m.sheet_keyword, sheet_name):
+                continue
+            out_maps.append(m)
+        return out_maps
+
+    def _apply_maps(path: str, maps: list[PathMapRule]) -> str:
+        if not path:
+            return path
+        for m in maps:
+            if m.match_mode == "包含":
+                if m.original and m.original in path:
+                    return path.replace(m.original, m.standard)
+            else:
+                if path == m.original:
+                    return m.standard
+        return path
+
+    col_maps = _filter_maps("列头")
+    col_std_cache: dict[int, str] = {}
+    ordered_cols: list[str] = []
+    for c in range(c_start, c_end + 1):
+        cp_std = _apply_maps(col_path_final[c], col_maps)
+        col_std_cache[c] = cp_std
+        ordered_cols.append(cp_std)
+    return col_std_cache, ordered_cols
+
+
 def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: TimelineRule,
                               sheet_name: str, path_maps: list[PathMapRule],
                               row_suffix_enabled: bool,
@@ -442,7 +556,7 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
             _header_text_with_left_fill_override(r, c)
             for c in range(c_start, c_end + 1)
         ]
-        header_row_texts[r] = _normalize_header_row_noise(row_texts)
+        header_row_texts[r] = row_texts
 
     # 必含行头/列头 校验
     rh_values = []
@@ -459,34 +573,18 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
     if not _required_match(rule.required_col_headers, ch_values_flat):
         return []
 
-    # 生成列头路径（按列）
-    col_path_raw: dict[int, str] = {}
-    for c in range(c_start, c_end + 1):
-        parts: list[str] = []
-        c0 = c - c_start
-        for r in ch_rows:
-            row_texts = header_row_texts.get(r, [])
-            p = row_texts[c0] if 0 <= c0 < len(row_texts) else ""
-            if p:
-                parts.append(p)
-        col_path_raw[c] = "_".join(parts)
-
-    # 列头同名编号（始终启用）
-    raw_count: dict[str, int] = {}
-    for p in col_path_raw.values():
-        if p:
-            raw_count[p] = raw_count.get(p, 0) + 1
-    col_path_final: dict[int, str] = {}
-    seen_col: dict[str, int] = {}
-    for c, raw in col_path_raw.items():
-        if not raw:
-            col_path_final[c] = _fallback_col_path(c)
-            continue
-        seen_col[raw] = seen_col.get(raw, 0) + 1
-        if raw_count.get(raw, 0) > 1:
-            col_path_final[c] = f"{raw}_{seen_col[raw]}"
-        else:
-            col_path_final[c] = raw
+    col_std_cache, _ordered_cols = compute_wide_col_paths_from_arrays(
+        df,
+        merge_ranges,
+        rule,
+        sheet_name,
+        path_maps,
+        source_path.name,
+        c_start=c_start,
+        c_end=c_end,
+        ch_rows=ch_rows,
+        cell_text_overrides=cell_text_overrides,
+    )
 
     # 行头同名处理
     row_path_final: dict[int, str] = {}
@@ -551,12 +649,6 @@ def extract_cells_from_arrays(df, merge_ranges, source_path: Path, rule: Timelin
         return path
 
     row_maps = _filter_maps("行头")
-    col_maps = _filter_maps("列头")
-
-    # 列头只依赖列，先预计算，避免放入 row×col 内层循环反复算
-    col_std_cache: dict[int, str] = {
-        c: _apply_maps(col_path_final[c], col_maps) for c in range(c_start, c_end + 1)
-    }
 
     # 用 numpy 数组定位比 df.iat 快很多
     values = df.values
