@@ -4,6 +4,7 @@ from copy import copy
 from datetime import datetime
 from pathlib import Path
 import re
+from time import perf_counter
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils.cell import get_column_letter, range_boundaries
@@ -119,6 +120,8 @@ def _apply_print_setup(
     fit_wide: int = 1,
     fit_tall: int = 1,
     orientation: str | None = None,
+    center_h: bool = False,
+    center_v: bool = False,
 ) -> None:
     rows_count = max(total_rows, 1)
     cols_count = max(total_cols, 1)
@@ -129,11 +132,23 @@ def _apply_print_setup(
     else:
         ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToWidth = max(1, int(fit_wide or 1))
-    ws.page_setup.fitToHeight = max(1, int(fit_tall or 1))
+    # fitToHeight=0 表示不限制页高，按实际内容分页
+    ws.page_setup.fitToHeight = max(0, int(fit_tall if fit_tall is not None else 1))
     ws.page_setup.scale = None
     ws.page_setup.paperSize = 9  # A4
     ws.print_area = f"A1:{get_column_letter(cols_count)}{rows_count}"
+    ws.print_options.horizontalCentered = bool(center_h)
+    ws.print_options.verticalCentered = bool(center_v)
     ws.oddFooter.center.text = "第 &P 页 / 共 &N 页"
+
+
+def _apply_sheet_order_footer(out_wb: Workbook) -> None:
+    sheets = list(out_wb.worksheets)
+    total = len(sheets)
+    if total <= 0:
+        return
+    for idx, ws in enumerate(sheets, start=1):
+        ws.oddFooter.center.text = f"第 {idx} 页 / 共 {total} 页"
 
 
 def _parse_ranges_text(range_text: str) -> list[tuple[int, int, int, int]]:
@@ -185,6 +200,8 @@ def _copy_block(
     dst_start_row: int,
     mode: int,
     value_ws: Worksheet | None = None,
+    hide_zero: bool = False,
+    drop_comments: bool = False,
 ) -> tuple[int, int]:
     min_row, min_col, max_row, max_col = bounds
     rows_count = max_row - min_row + 1
@@ -194,17 +211,19 @@ def _copy_block(
         src_r = min_row + r
         dst_r = dst_start_row + r
         src_h = src_ws.row_dimensions[src_r].height
-        if src_h is not None and mode in (1, 2):
+        if src_h is not None and mode == 1:
             dst_ws.row_dimensions[dst_r].height = src_h
         for c in range(cols_count):
             src_c = min_col + c
             dst_c = 1 + c
             src_cell = src_ws.cell(src_r, src_c)
             dst_cell = dst_ws.cell(dst_r, dst_c)
+            raw_value = None
             if value_ws is not None:
-                dst_cell.value = value_ws.cell(src_r, src_c).value
+                raw_value = value_ws.cell(src_r, src_c).value
             else:
-                dst_cell.value = src_cell.value
+                raw_value = src_cell.value
+            dst_cell.value = _normalize_out_value(raw_value, hide_zero)
             if mode in (1, 2):
                 if src_cell.has_style:
                     # 跨工作簿不能直接赋 _style（会引用源样式索引），需逐属性复制
@@ -214,7 +233,7 @@ def _copy_block(
                     dst_cell.alignment = copy(src_cell.alignment)
                     dst_cell.protection = copy(src_cell.protection)
                     dst_cell.number_format = src_cell.number_format
-                if src_cell.comment is not None:
+                if (not drop_comments) and src_cell.comment is not None:
                     dst_cell.comment = copy(src_cell.comment)
             else:
                 # 快速复制：仅保留基础样式（不复制边框/保护/批注）
@@ -269,11 +288,66 @@ def _copy_block(
                 except Exception:
                     pass
 
+    if mode == 2:
+        _autofit_block_columns(dst_ws, dst_start_row, rows_count, cols_count)
+        _compact_block_row_heights(dst_ws, dst_start_row, rows_count)
     return rows_count, cols_count
 
 
+def _is_zero_like(v) -> bool:
+    if v is None:
+        return False
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, (int, float)):
+        return abs(float(v)) == 0.0
+    s = str(v).strip().replace(",", "")
+    if s == "":
+        return False
+    try:
+        return abs(float(s)) == 0.0
+    except Exception:
+        return False
+
+
+def _normalize_out_value(v, hide_zero: bool):
+    if hide_zero and _is_zero_like(v):
+        return None
+    return v
+
+
+def _autofit_block_columns(dst_ws: Worksheet, start_row: int, rows: int, cols: int) -> None:
+    """mode=2：紧凑适配列宽，尽量避免 #### 且不过度变宽。"""
+    if rows <= 0 or cols <= 0:
+        return
+    for c in range(1, cols + 1):
+        max_len = 0
+        for r in range(start_row, start_row + rows):
+            v = dst_ws.cell(r, c).value
+            if v is None:
+                continue
+            n = len(str(v).strip())
+            if n > max_len:
+                max_len = n
+        if max_len <= 0:
+            continue
+        # 紧凑口径：给少量冗余，且限制最大宽度，避免“挤成一页时字体过小”
+        target_w = min(18.0, max(6.5, max_len * 0.95 + 1.2))
+        key = get_column_letter(c)
+        dst_ws.column_dimensions[key].width = float(target_w)
+
+
+def _compact_block_row_heights(dst_ws: Worksheet, start_row: int, rows: int) -> None:
+    """mode=2：行高压回标准紧凑值。"""
+    if rows <= 0:
+        return
+    compact_h = 15.0
+    for r in range(start_row, start_row + rows):
+        dst_ws.row_dimensions[r].height = compact_h
+
+
 def run_print_fast_by_comment(
-    source_paths: list[Path], output_dir: Path, log_dir: Path
+    source_paths: list[Path], output_dir: Path, log_dir: Path, hide_zero: bool = False
 ) -> dict[str, int]:
     log = get_logger("3_10_3_print_fast", log_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -317,13 +391,16 @@ def run_print_fast_by_comment(
                 name = src_ws.title if len(ranges) == 1 else f"{src_ws.title}_{i}"
                 dst_ws = out_wb.create_sheet(title=name[:31])
                 src_val_ws = src_val_wb[src_ws.title] if src_ws.title in src_val_wb.sheetnames else None
-                rows, cols = _copy_block(src_ws, dst_ws, rg, 1, mode=3, value_ws=src_val_ws)
+                rows, cols = _copy_block(
+                    src_ws, dst_ws, rg, 1, mode=3, value_ws=src_val_ws, hide_zero=hide_zero
+                )
                 orientation = _parse_orientation(a1_txt) or _auto_orientation(rows, cols)
-                _apply_print_setup(dst_ws, rows, cols, 1, 1, orientation)
+                _apply_print_setup(dst_ws, rows, cols, 1, 0, orientation, False, False)
                 sheet_hit += 1
 
         if book_sheet_hit > 0:
             wb_hit += 1
+            _apply_sheet_order_footer(out_wb)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             out_path = output_dir / f"{ts}_按批注打印（快速复制）.xlsx"
             out_path = _save_with_suffix_fallback(out_wb, out_path)
@@ -345,7 +422,7 @@ def run_print_fast_by_comment(
 
 
 def run_print_keep_by_comment(
-    source_paths: list[Path], output_dir: Path, log_dir: Path
+    source_paths: list[Path], output_dir: Path, log_dir: Path, hide_zero: bool = False
 ) -> dict[str, int]:
     log = get_logger("3_10_1_print_keep", log_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -389,13 +466,16 @@ def run_print_keep_by_comment(
                 name = src_ws.title if len(ranges) == 1 else f"{src_ws.title}_{i}"
                 dst_ws = out_wb.create_sheet(title=name[:31])
                 src_val_ws = src_val_wb[src_ws.title] if src_ws.title in src_val_wb.sheetnames else None
-                rows, cols = _copy_block(src_ws, dst_ws, rg, 1, mode=1, value_ws=src_val_ws)
+                rows, cols = _copy_block(
+                    src_ws, dst_ws, rg, 1, mode=1, value_ws=src_val_ws, hide_zero=hide_zero
+                )
                 orientation = _parse_orientation(a1_txt) or _auto_orientation_by_range(src_ws, rg)
-                _apply_print_setup(dst_ws, rows, cols, 1, 1, orientation)
+                _apply_print_setup(dst_ws, rows, cols, 1, 0, orientation, False, False)
                 sheet_hit += 1
 
         if book_sheet_hit > 0:
             wb_hit += 1
+            _apply_sheet_order_footer(out_wb)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             out_path = output_dir / f"{ts}_按批注打印（保留源格式）.xlsx"
             out_path = _save_with_suffix_fallback(out_wb, out_path)
@@ -499,7 +579,7 @@ def run_print_config_precheck(tasks: list[dict], log_dir: Path) -> dict[str, int
     return {"ok": ok, "warn": warn, "fail": fail}
 
 
-def run_print_config_all_modes(tasks: list[dict], log_dir: Path) -> dict[str, int]:
+def run_print_config_all_modes(tasks: list[dict], log_dir: Path) -> dict[str, object]:
     log = get_logger("3_10_7_print_config_run_all", log_dir)
     source_cache: dict[str, object] = {}
     source_value_cache: dict[str, object] = {}
@@ -510,8 +590,19 @@ def run_print_config_all_modes(tasks: list[dict], log_dir: Path) -> dict[str, in
     written_row_count = 0
     task_ok = 0
     task_skip = 0
+    total_enabled = sum(
+        1 for t in tasks
+        if t.get("enabled", False) and int(t.get("mode", 0) or 0) in (1, 2, 3)
+    )
+    progress_idx = 0
+    started_ts = perf_counter()
+    slow_records: list[dict[str, object]] = []
 
     for mode in (1, 2, 3):
+        mode_started = perf_counter()
+        mode_ok_before = task_ok
+        mode_skip_before = task_skip
+        mode_rows_before = written_row_count
         for t in tasks:
             if not t.get("enabled", False):
                 continue
@@ -523,6 +614,14 @@ def run_print_config_all_modes(tasks: list[dict], log_dir: Path) -> dict[str, in
             src_ws_name = _norm(t.get("source_ws"))
             tgt_wb_path = t.get("target_wb")
             tgt_ws_name = _norm(t.get("target_ws"))
+            progress_idx += 1
+            task_started = perf_counter()
+            src_disp = f"{Path(str(src_wb_path)).name if src_wb_path else '?'}|{src_ws_name or '?'}"
+            tgt_disp = f"{Path(str(tgt_wb_path)).name if tgt_wb_path else '?'}|{tgt_ws_name or '?'}"
+            print(
+                f"[3-3进度] {progress_idx}/{total_enabled} mode={mode} row={row_no} src={src_disp} -> tgt={tgt_disp}",
+                flush=True,
+            )
 
             if (
                 src_wb_path is None
@@ -534,10 +633,16 @@ def run_print_config_all_modes(tasks: list[dict], log_dir: Path) -> dict[str, in
             ):
                 task_skip += 1
                 log.warning("skip row=%s reason=config_invalid", row_no)
+                elapsed = perf_counter() - task_started
+                print(f"[3-3完成] row={row_no} skip=config_invalid 耗时={elapsed:.2f}s", flush=True)
+                slow_records.append({"row_no": row_no, "mode": mode, "target": tgt_disp, "elapsed_sec": elapsed, "status": "skip:config_invalid"})
                 continue
             if Path(tgt_wb_path).suffix.lower() not in (".xlsx", ".xlsm"):
                 task_skip += 1
                 log.warning("skip row=%s reason=target_ext_unsupported", row_no)
+                elapsed = perf_counter() - task_started
+                print(f"[3-3完成] row={row_no} skip=target_ext_unsupported 耗时={elapsed:.2f}s", flush=True)
+                slow_records.append({"row_no": row_no, "mode": mode, "target": tgt_disp, "elapsed_sec": elapsed, "status": "skip:target_ext_unsupported"})
                 continue
 
             src_key = str(src_wb_path)
@@ -555,11 +660,17 @@ def run_print_config_all_modes(tasks: list[dict], log_dir: Path) -> dict[str, in
                 except Exception as e:
                     task_skip += 1
                     log.warning("skip row=%s reason=open_source_failed err=%s", row_no, e)
+                    elapsed = perf_counter() - task_started
+                    print(f"[3-3完成] row={row_no} skip=open_source_failed 耗时={elapsed:.2f}s", flush=True)
+                    slow_records.append({"row_no": row_no, "mode": mode, "target": tgt_disp, "elapsed_sec": elapsed, "status": "skip:open_source_failed"})
                     continue
 
             if src_ws_name not in src_wb.sheetnames:
                 task_skip += 1
                 log.warning("skip row=%s reason=source_sheet_not_found sheet=%s", row_no, src_ws_name)
+                elapsed = perf_counter() - task_started
+                print(f"[3-3完成] row={row_no} skip=source_sheet_not_found 耗时={elapsed:.2f}s", flush=True)
+                slow_records.append({"row_no": row_no, "mode": mode, "target": tgt_disp, "elapsed_sec": elapsed, "status": "skip:source_sheet_not_found"})
                 continue
             src_ws = src_wb[src_ws_name]
             src_val_wb = source_value_cache.get(src_key)
@@ -574,6 +685,9 @@ def run_print_config_all_modes(tasks: list[dict], log_dir: Path) -> dict[str, in
                 except Exception:
                     task_skip += 1
                     log.warning("skip row=%s reason=invalid_range", row_no)
+                    elapsed = perf_counter() - task_started
+                    print(f"[3-3完成] row={row_no} skip=invalid_range 耗时={elapsed:.2f}s", flush=True)
+                    slow_records.append({"row_no": row_no, "mode": mode, "target": tgt_disp, "elapsed_sec": elapsed, "status": "skip:invalid_range"})
                     continue
             else:
                 ranges = [_used_bounds(src_ws)]
@@ -604,7 +718,16 @@ def run_print_config_all_modes(tasks: list[dict], log_dir: Path) -> dict[str, in
             out_row = 1
             max_cols = 1
             for rg in ranges:
-                rows, cols = _copy_block(src_ws, tgt_ws, rg, out_row, mode=mode, value_ws=src_val_ws)
+                rows, cols = _copy_block(
+                    src_ws,
+                    tgt_ws,
+                    rg,
+                    out_row,
+                    mode=mode,
+                    value_ws=src_val_ws,
+                    hide_zero=bool(t.get("hide_zero", False)),
+                    drop_comments=bool(t.get("drop_comments", False)),
+                )
                 out_row += rows + 1  # 段间空 1 行
                 max_cols = max(max_cols, cols)
                 written_row_count += rows
@@ -621,15 +744,28 @@ def run_print_config_all_modes(tasks: list[dict], log_dir: Path) -> dict[str, in
                 fit_wide=max(1, fw),
                 fit_tall=max(1, ft),
                 orientation=orientation,
+                center_h=bool(t.get("center_h", False)),
+                center_v=bool(t.get("center_v", False)),
             )
 
             changed_targets.add(tgt_key)
             task_ok += 1
             written_sheet_count += 1
             log.info("ok row=%s mode=%s target=%s|%s", row_no, mode, Path(tgt_key).name, tgt_ws.title)
+            elapsed = perf_counter() - task_started
+            print(f"[3-3完成] row={row_no} ok 耗时={elapsed:.2f}s", flush=True)
+            slow_records.append({"row_no": row_no, "mode": mode, "target": f"{Path(tgt_key).name}|{tgt_ws.title}", "elapsed_sec": elapsed, "status": "ok"})
+
+        mode_elapsed = perf_counter() - mode_started
+        print(
+            f"[3-3阶段] mode={mode} ok+{task_ok - mode_ok_before} skip+{task_skip - mode_skip_before} "
+            f"rows+{written_row_count - mode_rows_before} 耗时={mode_elapsed:.2f}s",
+            flush=True,
+        )
 
     for key, wb in target_cache.items():
         if key in changed_targets:
+            _apply_sheet_order_footer(wb)
             p = Path(key)
             p.parent.mkdir(parents=True, exist_ok=True)
             wb.save(p)
@@ -639,9 +775,15 @@ def run_print_config_all_modes(tasks: list[dict], log_dir: Path) -> dict[str, in
     for wb in source_value_cache.values():
         wb.close()
 
+    elapsed_sec = perf_counter() - started_ts
+    slow_top = sorted(slow_records, key=lambda x: float(x.get("elapsed_sec", 0.0)), reverse=True)[:3]
+
     return {
         "task_ok": task_ok,
         "task_skip": task_skip,
         "written_sheets": written_sheet_count,
         "written_rows": written_row_count,
+        "elapsed_sec": elapsed_sec,
+        "task_total": total_enabled,
+        "slow_top": slow_top,
     }

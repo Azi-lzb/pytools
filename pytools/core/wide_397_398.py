@@ -1,6 +1,7 @@
 from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
+import time
 import pandas as pd
 
 from .config_xlsx import GlobalConfig, TimelineRule, PathMapRule
@@ -79,6 +80,7 @@ def run_wide_summary(rules: list[TimelineRule], path_maps: list[PathMapRule],
         ext_ok = {e.lower() for e in g.source_exts} | {".xls"}
         sources = [p for p in source_paths if p.exists() and p.suffix.lower() in ext_ok]
     log.info(f"开始宽表汇总({tag}): 源 {len(sources)}，规则 {len(rules)}，行头后缀={row_suffix_enabled}")
+    t_all0 = time.perf_counter()
 
     # rule_name -> dict[(wb,sheet,date,row_path)] -> dict[col_path] -> value
     by_rule: dict[str, dict[tuple, dict[str, object]]] = {}
@@ -97,6 +99,8 @@ def run_wide_summary(rules: list[TimelineRule], path_maps: list[PathMapRule],
     for src in sources:
         try:
             for rule in pick_rules_for_workbook(rules, src.name, g.timeline_rule_match_mode):
+                rule_t0 = time.perf_counter()
+                cells_before = rule_stats[rule.name]["cells"]
                 if getattr(rule, "set_parse_error", ""):
                     log.warning("规则[%s] set区域配置非法，已跳过: %s", rule.name, rule.set_parse_error)
                     continue
@@ -208,6 +212,12 @@ def run_wide_summary(rules: list[TimelineRule], path_maps: list[PathMapRule],
                         row_dict[ec.col_path] = ec.value
                 if not hit_sheet:
                     rule_stats[rule.name]["sheet_miss"] += 1
+                log.info(
+                    "规则[%s] 用时 %.2fs, 产出cells=%s",
+                    rule.name,
+                    time.perf_counter() - rule_t0,
+                    rule_stats[rule.name]["cells"] - cells_before,
+                )
         except Exception as e:
             log.warning(f"处理 {src.name} 失败: {e}")
             if g.error_policy == "fail_fast":
@@ -249,7 +259,10 @@ def run_wide_summary(rules: list[TimelineRule], path_maps: list[PathMapRule],
         menu_name = "宽表规则汇总（行头不加后缀）"
     out_path = g.output_dir / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{menu_name}.xlsx"
     write_workbook(out_path, sheets)
-    log.info(f"完成: 规则数 {len(by_rule)}，输出行 {total_rows}，冲突 {conflict} → {out_path}")
+    log.info(
+        "完成: 规则数 %s，输出行 %s，冲突 %s，耗时 %.2fs → %s",
+        len(by_rule), total_rows, conflict, time.perf_counter() - t_all0, out_path
+    )
 
     # 写目标簿
     for rule in rules:

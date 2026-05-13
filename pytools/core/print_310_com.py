@@ -147,11 +147,89 @@ def _copy_block_com(src_ws, dst_ws, src_bounds, dst_start_row: int, mode: int) -
             dst_ws.Cells(1, c).ColumnWidth = float(src_ws.Cells(sr, sc + c - 1).ColumnWidth or 9.0)
         except Exception:
             pass
+    if mode == 2:
+        try:
+            dst_rng = dst_ws.Range(
+                dst_ws.Cells(dst_start_row, 1),
+                dst_ws.Cells(dst_start_row + rows - 1, cols),
+            )
+            dst_rng.EntireColumn.AutoFit()
+            # 紧凑口径：限制列宽上限，避免打印缩放后内容过小
+            for c in range(1, cols + 1):
+                cw = float(dst_ws.Cells(1, c).ColumnWidth or 9.0)
+                dst_ws.Cells(1, c).ColumnWidth = max(6.5, min(18.0, cw))
+            # 行高压回标准紧凑值
+            for r in range(dst_start_row, dst_start_row + rows):
+                dst_ws.Rows(r).RowHeight = 15.0
+        except Exception:
+            pass
     return rows, cols
 
 
+def _is_zero_like(v) -> bool:
+    if v is None:
+        return False
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, (int, float)):
+        return abs(float(v)) == 0.0
+    s = str(v).strip().replace(",", "")
+    if s == "":
+        return False
+    try:
+        return abs(float(s)) == 0.0
+    except Exception:
+        return False
+
+
+def _clear_zero_in_block(dst_ws, start_row: int, rows: int, cols: int) -> None:
+    if rows <= 0 or cols <= 0:
+        return
+    try:
+        rng = dst_ws.Range(dst_ws.Cells(start_row, 1), dst_ws.Cells(start_row + rows - 1, cols))
+        data = rng.Value
+        if data is None:
+            return
+        if not isinstance(data, tuple):
+            rng.Value = None if _is_zero_like(data) else data
+            return
+        payload = []
+        for row in data:
+            new_row = []
+            for v in row:
+                new_row.append(None if _is_zero_like(v) else v)
+            payload.append(tuple(new_row))
+        rng.Value = tuple(payload)
+    except Exception:
+        pass
+
+
+def _clear_comments_in_block(dst_ws, start_row: int, rows: int, cols: int) -> None:
+    if rows <= 0 or cols <= 0:
+        return
+    try:
+        rng = dst_ws.Range(dst_ws.Cells(start_row, 1), dst_ws.Cells(start_row + rows - 1, cols))
+        try:
+            rng.ClearComments()
+            return
+        except Exception:
+            pass
+        for r in range(start_row, start_row + rows):
+            for c in range(1, cols + 1):
+                try:
+                    cell = dst_ws.Cells(r, c)
+                    if cell.Comment is not None:
+                        cell.Comment.Delete()
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+
 def _apply_print_setup_com(ws, rows: int, cols: int, fit_wide: int, fit_tall: int,
-                           orientation: str | None) -> None:
+                           orientation: str | None,
+                           center_h: bool = False,
+                           center_v: bool = False) -> None:
     ps = ws.PageSetup
     ps.Orientation = (
         XL_ORIENT_LANDSCAPE if orientation == "landscape" else XL_ORIENT_PORTRAIT
@@ -162,7 +240,8 @@ def _apply_print_setup_com(ws, rows: int, cols: int, fit_wide: int, fit_tall: in
         pass
     try:
         ps.FitToPagesWide = max(1, int(fit_wide or 1))
-        ps.FitToPagesTall = max(1, int(fit_tall or 1))
+        # FitToPagesTall=0 表示不限制页高，按实际内容分页
+        ps.FitToPagesTall = max(0, int(fit_tall if fit_tall is not None else 1))
     except Exception:
         pass
     try:
@@ -174,6 +253,26 @@ def _apply_print_setup_com(ws, rows: int, cols: int, fit_wide: int, fit_tall: in
         ps.CenterFooter = "第 &P 页 / 共 &N 页"
     except Exception:
         pass
+    try:
+        ps.CenterHorizontally = bool(center_h)
+        ps.CenterVertically = bool(center_v)
+    except Exception:
+        pass
+
+
+def _apply_sheet_order_footer_com(wb) -> None:
+    try:
+        total = int(wb.Worksheets.Count)
+    except Exception:
+        return
+    if total <= 0:
+        return
+    for idx in range(1, total + 1):
+        try:
+            ws = wb.Worksheets(idx)
+            ws.PageSetup.CenterFooter = f"第 {idx} 页 / 共 {total} 页"
+        except Exception:
+            continue
 
 
 def _add_clean_workbook(app):
@@ -250,6 +349,7 @@ def _run_print_by_comment_com(
     mode: int,
     menu_name: str,
     feature_tag: str,
+    hide_zero: bool = False,
 ) -> dict[str, int]:
     log = get_logger(feature_tag, log_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -295,6 +395,8 @@ def _run_print_by_comment_com(
                         name = src_title if len(ranges) == 1 else f"{src_title}_{i}"
                         dst_ws = wb_create_sheet(out_wb, name[:31])
                         rows, cols = _copy_block_com(src_ws, dst_ws, rg, 1, mode=mode)
+                        if hide_zero:
+                            _clear_zero_in_block(dst_ws, 1, rows, cols)
                         # 自动方向：mode=3 用尺寸快速判定；其他用行列实际宽高
                         if mode == 3:
                             orientation = (
@@ -306,12 +408,13 @@ def _run_print_by_comment_com(
                                 _parse_orientation(a1)
                                 or _auto_orientation_by_range_com(src_ws, rg)
                             )
-                        _apply_print_setup_com(dst_ws, rows, cols, 1, 1, orientation)
+                        _apply_print_setup_com(dst_ws, rows, cols, 1, 0, orientation, False, False)
                         sheet_hit += 1
 
                 if book_sheet_hit > 0:
                     wb_hit += 1
                     _drop_default_sheet(out_wb, default_name)
+                    _apply_sheet_order_footer_com(out_wb)
                     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                     out_path = output_dir / f"{ts}_{menu_name}_COM.xlsx"
                     saved = _save_xlsx_with_fallback(app, out_wb, out_path)
@@ -345,7 +448,7 @@ def wb_create_sheet(wb, title: str):
 
 
 def run_print_keep_by_comment_com(
-    source_paths: list[Path], output_dir: Path, log_dir: Path
+    source_paths: list[Path], output_dir: Path, log_dir: Path, hide_zero: bool = False
 ) -> dict[str, int]:
     """3.10.1 按批注打印（保留源格式）— COM。"""
     return _run_print_by_comment_com(
@@ -353,11 +456,12 @@ def run_print_keep_by_comment_com(
         mode=1,
         menu_name="按批注打印（保留源格式）",
         feature_tag="3_10_1_print_keep_com",
+        hide_zero=hide_zero,
     )
 
 
 def run_print_fast_by_comment_com(
-    source_paths: list[Path], output_dir: Path, log_dir: Path
+    source_paths: list[Path], output_dir: Path, log_dir: Path, hide_zero: bool = False
 ) -> dict[str, int]:
     """3.10.3 按批注打印（快速复制：值+格式）— COM。"""
     return _run_print_by_comment_com(
@@ -365,6 +469,7 @@ def run_print_fast_by_comment_com(
         mode=3,
         menu_name="按批注打印（快速复制）",
         feature_tag="3_10_3_print_fast_com",
+        hide_zero=hide_zero,
     )
 
 
@@ -483,6 +588,10 @@ def run_print_config_all_modes_com(tasks: list[dict], log_dir: Path) -> dict[str
                 max_cols = 1
                 for rg in ranges:
                     rows, cols = _copy_block_com(src_ws, tgt_ws, rg, out_row, mode=current_mode)
+                    if bool(t.get("hide_zero", False)):
+                        _clear_zero_in_block(tgt_ws, out_row, rows, cols)
+                    if bool(t.get("drop_comments", False)):
+                        _clear_comments_in_block(tgt_ws, out_row, rows, cols)
                     out_row += rows + 1  # 段间留 1 空行
                     max_cols = max(max_cols, cols)
                     written_row_count += rows
@@ -499,6 +608,8 @@ def run_print_config_all_modes_com(tasks: list[dict], log_dir: Path) -> dict[str
                     fit_wide=max(1, fw),
                     fit_tall=max(1, ft),
                     orientation=orientation,
+                    center_h=bool(t.get("center_h", False)),
+                    center_v=bool(t.get("center_v", False)),
                 )
 
                 changed_targets.add(tgt_key)
@@ -513,6 +624,7 @@ def run_print_config_all_modes_com(tasks: list[dict], log_dir: Path) -> dict[str
                 continue
             try:
                 _drop_default_sheet(wb, target_default_sheet.get(key, ""))
+                _apply_sheet_order_footer_com(wb)
                 p = Path(key)
                 p.parent.mkdir(parents=True, exist_ok=True)
                 if p.exists():
@@ -641,6 +753,10 @@ def run_print_config_to_pdf_com(tasks: list[dict], output_dir: Path,
                 max_cols = 1
                 for rg in ranges:
                     rows, cols = _copy_block_com(src_ws, tgt_ws, rg, out_row, mode=current_mode)
+                    if bool(t.get("hide_zero", False)):
+                        _clear_zero_in_block(tgt_ws, out_row, rows, cols)
+                    if bool(t.get("drop_comments", False)):
+                        _clear_comments_in_block(tgt_ws, out_row, rows, cols)
                     out_row += rows + 1
                     max_cols = max(max_cols, cols)
                     written_row_count += rows
@@ -657,6 +773,8 @@ def run_print_config_to_pdf_com(tasks: list[dict], output_dir: Path,
                     fit_wide=max(1, fw),
                     fit_tall=max(1, ft),
                     orientation=orientation,
+                    center_h=bool(t.get("center_h", False)),
+                    center_v=bool(t.get("center_v", False)),
                 )
 
                 populated_targets.add(tgt_key)
@@ -672,6 +790,7 @@ def run_print_config_to_pdf_com(tasks: list[dict], output_dir: Path,
                 continue
             try:
                 _drop_default_sheet(wb, target_default_sheet.get(key, ""))
+                _apply_sheet_order_footer_com(wb)
                 stem = Path(key).stem
                 pdf_path = output_dir / f"{ts}_按配置打印导出PDF（打印预览）_{stem}.pdf"
                 pdf_path = _next_available_output_path(pdf_path)

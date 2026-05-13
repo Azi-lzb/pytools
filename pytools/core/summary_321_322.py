@@ -25,6 +25,21 @@ def _supported(path: Path) -> bool:
     return path.suffix.lower() in (".xlsx", ".xlsm")
 
 
+def _safe_sheet_name(name: str, used: set[str]) -> str:
+    s = re.sub(r"[\\/?*\[\]:]", "_", _norm(name) or "Sheet")[:31] or "Sheet"
+    if s not in used:
+        used.add(s)
+        return s
+    base = s[:28]
+    i = 2
+    while True:
+        cand = f"{base}_{i}"[:31]
+        if cand not in used:
+            used.add(cand)
+            return cand
+        i += 1
+
+
 def _disambiguate_headers(names: list[str]) -> list[str]:
     """同名列追加 _2/_3/... 后缀，第一次出现保持原名。"""
     seen: dict[str, int] = {}
@@ -284,38 +299,27 @@ def run_summary_by_comment(
     if not specs:
         raise ValueError("模板未识别到可用批注区域（需包含 行区域N/#N 与 列区域N/#N）。")
 
-    # 按 (spec, 位置) 展开，避免同名列被并集去重导致丢列；重复名追加 _N 后缀消歧。
-    set_layout: list[tuple[str, int]] = []   # (spec_key, pos_in_spec)
-    col_layout: list[tuple[str, int]] = []
-    raw_set_headers: list[str] = []
-    raw_col_headers: list[str] = []
-    for spec_key, sp in specs.items():
-        for pos, n in enumerate(sp.set_names):
-            set_layout.append((spec_key, pos))
-            raw_set_headers.append(n)
-        for pos, h in enumerate(sp.col_headers):
-            col_layout.append((spec_key, pos))
-            raw_col_headers.append(h)
-    set_headers = _disambiguate_headers(raw_set_headers)
-    col_headers_flat = _disambiguate_headers(raw_col_headers)
-
     out_wb = Workbook()
-    ws_out = out_wb.active
-    ws_out.title = "汇总"
-    headers = ["工作簿", "工作表"] + set_headers + col_headers_flat + ["行号"]
-    for i, h in enumerate(headers, 1):
-        ws_out.cell(1, i).value = h
-        ws_out.cell(1, i).font = ws_out.cell(1, i).font.copy(bold=True)
+    default_ws = out_wb.active
+    out_wb.remove(default_ws)
+    used_sheet_names: set[str] = set()
+    sheet_ctx: dict[str, dict[str, object]] = {}
+    for spec_key, sp in specs.items():
+        ws = out_wb.create_sheet(_safe_sheet_name(spec_key, used_sheet_names))
+        set_headers = _disambiguate_headers(sp.set_names)
+        col_headers = _disambiguate_headers(sp.col_headers)
+        headers = ["工作簿", "工作表"] + set_headers + col_headers + ["行号"]
+        for i, h in enumerate(headers, 1):
+            ws.cell(1, i).value = h
+            ws.cell(1, i).font = ws.cell(1, i).font.copy(bold=True)
+        sheet_ctx[spec_key] = {
+            "ws": ws,
+            "row_idx": 2,
+            "set_base": 3,
+            "col_base": 3 + len(set_headers),
+            "last_col": len(headers),
+        }
 
-    # (spec_key, pos_in_spec) → 输出列号（1-based）
-    set_loc: dict[tuple[str, int], int] = {
-        key: 3 + i for i, key in enumerate(set_layout)
-    }
-    col_loc: dict[tuple[str, int], int] = {
-        key: 3 + len(set_layout) + i for i, key in enumerate(col_layout)
-    }
-
-    row_idx = 2
     rows_written = 0
     files_hit = 0
     fallback_spec = specs.get("模板")
@@ -341,6 +345,13 @@ def run_summary_by_comment(
                 if specs.get(sname) is None and fallback_spec is not None:
                     log.info("fallback wb=%s sheet=%s template=模板", wb_name, sname)
 
+                ctx = sheet_ctx[matched_template_name]
+                ws_out = ctx["ws"]
+                row_idx = int(ctx["row_idx"])
+                set_base = int(ctx["set_base"])
+                col_base = int(ctx["col_base"])
+                last_col = int(ctx["last_col"])
+
                 # 本行数据先构建字典，再映射到并集列
                 for sr, er, _, _ in spec.row_regions:
                     for data_row in range(sr, er + 1):
@@ -352,9 +363,7 @@ def run_summary_by_comment(
                             if i >= len(spec.set_names):
                                 break
                             sc, rr = _split_addr(addr)
-                            target_col = set_loc.get((matched_template_name, i))
-                            if target_col is not None:
-                                ws_out.cell(row_idx, target_col).value = _gcv(src_ws, rr, _col2num(sc))
+                            ws_out.cell(row_idx, set_base + i).value = _gcv(src_ws, rr, _col2num(sc))
 
                         # 列区域（按 spec 内位置定位输出列）
                         cidx = 0
@@ -362,14 +371,13 @@ def run_summary_by_comment(
                             for dc in range(cs, ce + 1):
                                 if cidx >= len(spec.col_headers):
                                     break
-                                target_col = col_loc.get((matched_template_name, cidx))
-                                if target_col is not None:
-                                    ws_out.cell(row_idx, target_col).value = _gcv(src_ws, data_row, dc)
+                                ws_out.cell(row_idx, col_base + cidx).value = _gcv(src_ws, data_row, dc)
                                 cidx += 1
 
-                        ws_out.cell(row_idx, len(headers)).value = data_row
+                        ws_out.cell(row_idx, last_col).value = data_row
                         row_idx += 1
                         rows_written += 1
+                ctx["row_idx"] = row_idx
         finally:
             src_wb.close()
 
@@ -377,7 +385,10 @@ def run_summary_by_comment(
         out_wb.close()
         return {"saved": False, "rows": 0, "path": ""}
 
-    ws_out.freeze_panes = "A2"
+    for ctx in sheet_ctx.values():
+        ws = ctx["ws"]
+        if int(ctx["row_idx"]) > 2:
+            ws.freeze_panes = "A2"
     out_path = output_dir / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_按批注汇总（模板+源文件）.xlsx"
     out_wb.save(out_path)
     out_wb.close()

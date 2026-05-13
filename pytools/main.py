@@ -1,5 +1,7 @@
 from __future__ import annotations
 import sys
+import os
+import time
 from pathlib import Path
 
 if __package__ in (None, ""):
@@ -24,7 +26,6 @@ from pytools.core.dedup_311 import (
     run_check_by_config,
     run_delete_by_config,
     run_append_by_config,
-    run_precheck_by_config,
 )
 from pytools.core.config_init import initialize_or_repair_config
 from pytools.core.print_310 import (
@@ -89,6 +90,7 @@ MAIN_MENU = """
   6  汇总工具
   7  一二批处理工具
   8  调研选项统计
+  9  快捷工具
   0  退出
 ==============================
 """
@@ -165,6 +167,14 @@ SUMMARY_MENU = """
 SURVEY_MENU = """
 ------ 调研选项统计 ------
   1  按题目选项比例统计 + 展示版（按 config 中『问卷统计配置』执行）
+  0  返回
+----------------------
+"""
+
+QUICK_MENU = """
+------ 快捷工具 ------
+  1  打开配置文件（config.xlsx）
+  2  打开 output 最新文件
   0  返回
 ----------------------
 """
@@ -262,6 +272,21 @@ def _split_sources_for_auto_route(paths: list[Path]) -> tuple[list[Path], list[P
     return normal_list, com_list
 
 
+def _open_path(path: Path) -> None:
+    if not path.exists():
+        raise FileNotFoundError(str(path))
+    os.startfile(str(path))
+
+
+def _latest_file_in_dir(dir_path: Path) -> Path | None:
+    if not dir_path.exists():
+        return None
+    files = [p for p in dir_path.rglob("*") if p.is_file() and not p.name.startswith("~$")]
+    if not files:
+        return None
+    return max(files, key=lambda p: p.stat().st_mtime)
+
+
 def _split_print_tasks_for_auto_route(tasks: list[dict]) -> tuple[list[dict], list[dict]]:
     """打印配置自动路由：.xls 走 COM；其余走非 COM。"""
     normal_list: list[dict] = []
@@ -283,9 +308,9 @@ def _show_main_menu() -> str:
             s = input("主菜单选择> ").strip()
         except EOFError:
             return "0"
-        if s in ("1", "2", "3", "4", "5", "6", "7", "8", "0"):
+        if s in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"):
             return s
-        print("仅接受 1/2/3/4/5/6/7/8/0")
+        print("仅接受 1/2/3/4/5/6/7/8/9/0")
 
 
 def _show_sub_menu(title: str, valid: tuple[str, ...]) -> str:
@@ -410,9 +435,30 @@ def dispatch(choice: str) -> None:
             f"[完成] 配置修复: 新建Sheet={stat.get('created_sheets', 0)} "
             f"修复Sheet={stat.get('repaired_sheets', 0)} 文件={CFG_PATH}"
         )
+        for line in stat.get("details", []) or []:
+            print(f"  - {line}")
         return
     if choice == "cv":
         _view_config()
+        return
+    if choice == "q1":
+        try:
+            _open_path(CFG_PATH)
+            print(f"[完成] 已打开配置文件: {CFG_PATH}")
+        except Exception as e:
+            print(f"[失败] 打开配置文件失败: {e}")
+        return
+    if choice == "q2":
+        g = load_global(CFG_PATH)
+        latest = _latest_file_in_dir(g.output_dir)
+        if latest is None:
+            print(f"[提示] 未找到输出文件: {g.output_dir}")
+            return
+        try:
+            _open_path(latest)
+            print(f"[完成] 已打开最新输出文件: {latest}")
+        except Exception as e:
+            print(f"[失败] 打开输出文件失败: {e}")
         return
     if choice == "5":
         run_precheck(CFG_PATH)
@@ -422,6 +468,10 @@ def dispatch(choice: str) -> None:
     g = load_global(CFG_PATH)
     g.output_dir.mkdir(parents=True, exist_ok=True)
     g.log_dir.mkdir(parents=True, exist_ok=True)
+    hide_zero_global = str(
+        load_global_value(CFG_PATH, "打印零值不输出", "")
+        or load_global_value(CFG_PATH, "打印零值不显示", "")
+    ).strip().lower() in ("是", "1", "true", "y", "yes", "on")
 
     if choice == "1":
         rules = load_timeline_rules(CFG_PATH)
@@ -548,11 +598,13 @@ def dispatch(choice: str) -> None:
             print("[已取消]")
             return
         suffix = (choice == "3")
+        t0 = time.perf_counter()
         out = run_wide_summary(rules, path_maps, g, row_suffix_enabled=suffix, source_paths=srcs)
+        elapsed = time.perf_counter() - t0
         if out is None:
-            print("[完成] 无匹配结果，未生成文件")
+            print(f"[完成] 无匹配结果，未生成文件（耗时 {elapsed:.2f}s）")
         else:
-            print(f"[完成] 输出: {out}")
+            print(f"[完成] 输出: {out}（耗时 {elapsed:.2f}s）")
     elif choice == "6":
         picked = _pick_one_workbook("选择要按批注检查重复的工作簿")
         if not picked:
@@ -570,15 +622,25 @@ def dispatch(choice: str) -> None:
     elif choice == "8":
         tasks = _to_dedup_tasks(load_dedup_tasks(CFG_PATH))
         stat = run_check_by_config(tasks, g.log_dir)
-        print(f"[完成] 任务成功={stat['task_ok']} 跳过={stat['task_skip']} 标红行={stat['marked_rows']}")
+        print(
+            f"[完成] 任务成功={stat['task_ok']} 跳过={stat['task_skip']} "
+            f"标红行={stat['marked_rows']} 耗时={float(stat.get('elapsed_sec', 0.0)):.2f}s"
+        )
     elif choice == "9":
         tasks = _to_dedup_tasks(load_dedup_tasks(CFG_PATH))
         stat = run_delete_by_config(tasks, g.log_dir)
-        print(f"[完成] 任务成功={stat['task_ok']} 跳过={stat['task_skip']} 删除行={stat['deleted_rows']}")
+        print(
+            f"[完成] 任务成功={stat['task_ok']} 跳过={stat['task_skip']} "
+            f"删除行={stat['deleted_rows']} 耗时={float(stat.get('elapsed_sec', 0.0)):.2f}s"
+        )
     elif choice == "a":
         tasks = _to_dedup_tasks(load_dedup_tasks(CFG_PATH))
         stat = run_append_by_config(tasks, g.log_dir)
-        print(f"[完成] 任务成功={stat['task_ok']} 跳过={stat['task_skip']} 追加={stat['appended_rows']} 去重删除={stat['deleted_rows']}")
+        print(
+            f"[完成] 任务成功={stat['task_ok']} 跳过={stat['task_skip']} "
+            f"追加={stat['appended_rows']} 去重删除={stat['deleted_rows']} "
+            f"耗时={float(stat.get('elapsed_sec', 0.0)):.2f}s"
+        )
     elif choice == "b":
         tasks = _to_dedup_tasks(load_dedup_tasks(CFG_PATH))
         stat = run_precheck_by_config(tasks, g.log_dir)
@@ -588,7 +650,7 @@ def dispatch(choice: str) -> None:
         if not srcs:
             print("[已取消]")
             return
-        stat = run_print_keep_by_comment(srcs, g.output_dir, g.log_dir)
+        stat = run_print_keep_by_comment(srcs, g.output_dir, g.log_dir, hide_zero=hide_zero_global)
         print(
             f"[完成] 命中工作簿={stat['workbooks_hit']} 命中sheet={stat['sheets_hit']} "
             f"输出文件={stat['saved_files']} 跳过={stat['skipped']}"
@@ -598,7 +660,7 @@ def dispatch(choice: str) -> None:
         if not srcs:
             print("[已取消]")
             return
-        stat = run_print_fast_by_comment(srcs, g.output_dir, g.log_dir)
+        stat = run_print_fast_by_comment(srcs, g.output_dir, g.log_dir, hide_zero=hide_zero_global)
         print(
             f"[完成] 命中工作簿={stat['workbooks_hit']} 命中sheet={stat['sheets_hit']} "
             f"输出文件={stat['saved_files']} 跳过={stat['skipped']}"
@@ -610,6 +672,19 @@ def dispatch(choice: str) -> None:
             f"[完成] 任务成功={stat['task_ok']} 跳过={stat['task_skip']} "
             f"写入sheet={stat['written_sheets']} 写入行={stat['written_rows']}"
         )
+        total = int(stat.get("task_total", 0) or 0)
+        elapsed = float(stat.get("elapsed_sec", 0.0) or 0.0)
+        avg = (elapsed / total) if total > 0 else 0.0
+        print(f"[耗时] 总耗时={elapsed:.2f}s 平均每任务={avg:.2f}s (任务总数={total})")
+        slow_top = stat.get("slow_top", []) or []
+        if slow_top:
+            print("[耗时] 最慢任务TOP3:")
+            for i, r in enumerate(slow_top, start=1):
+                print(
+                    f"  {i}. row={r.get('row_no')} mode={r.get('mode')} "
+                    f"target={r.get('target')} 耗时={float(r.get('elapsed_sec', 0.0)):.2f}s "
+                    f"status={r.get('status')}"
+                )
     elif choice == "p8":
         tasks = load_print_tasks(CFG_PATH)
         stat = run_print_config_precheck(tasks, g.log_dir)
@@ -622,14 +697,18 @@ def dispatch(choice: str) -> None:
         normal_srcs, com_srcs = _split_sources_for_auto_route(srcs)
         print(f"→ 自动路由：非COM={len(normal_srcs)}，COM(.xls)={len(com_srcs)}")
         if normal_srcs:
-            stat = run_print_keep_by_comment(normal_srcs, g.output_dir, g.log_dir)
+            stat = run_print_keep_by_comment(
+                normal_srcs, g.output_dir, g.log_dir, hide_zero=hide_zero_global
+            )
             print(
                 f"[完成] 非COM 命中工作簿={stat['workbooks_hit']} 命中sheet={stat['sheets_hit']} "
                 f"输出文件={stat['saved_files']} 跳过={stat['skipped']}"
             )
         if com_srcs:
             try:
-                stat = run_print_keep_by_comment_com(com_srcs, g.output_dir, g.log_dir)
+                stat = run_print_keep_by_comment_com(
+                    com_srcs, g.output_dir, g.log_dir, hide_zero=hide_zero_global
+                )
                 print(
                     f"[完成] COM 命中工作簿={stat['workbooks_hit']} 命中sheet={stat['sheets_hit']} "
                     f"输出文件={stat['saved_files']} 跳过={stat['skipped']}"
@@ -644,14 +723,18 @@ def dispatch(choice: str) -> None:
         normal_srcs, com_srcs = _split_sources_for_auto_route(srcs)
         print(f"→ 自动路由：非COM={len(normal_srcs)}，COM(.xls)={len(com_srcs)}")
         if normal_srcs:
-            stat = run_print_fast_by_comment(normal_srcs, g.output_dir, g.log_dir)
+            stat = run_print_fast_by_comment(
+                normal_srcs, g.output_dir, g.log_dir, hide_zero=hide_zero_global
+            )
             print(
                 f"[完成] 非COM 命中工作簿={stat['workbooks_hit']} 命中sheet={stat['sheets_hit']} "
                 f"输出文件={stat['saved_files']} 跳过={stat['skipped']}"
             )
         if com_srcs:
             try:
-                stat = run_print_fast_by_comment_com(com_srcs, g.output_dir, g.log_dir)
+                stat = run_print_fast_by_comment_com(
+                    com_srcs, g.output_dir, g.log_dir, hide_zero=hide_zero_global
+                )
                 print(
                     f"[完成] COM 命中工作簿={stat['workbooks_hit']} 命中sheet={stat['sheets_hit']} "
                     f"输出文件={stat['saved_files']} 跳过={stat['skipped']}"
@@ -818,9 +901,20 @@ def dispatch(choice: str) -> None:
             try:
                 stat = run_summary_by_comment_com(tmpl, com_srcs, g.output_dir, g.log_dir)
                 if not stat.get("saved"):
-                    print("[完成] COM 无可汇总数据，未生成文件")
+                    print(
+                        f"[完成] COM 无可汇总数据，未生成文件 "
+                        f"(命中sheet={stat.get('sheets_ok',0)} 跳过sheet={stat.get('sheets_skip',0)})"
+                    )
                 else:
-                    print(f"[完成] COM 行数={stat['rows']} 输出={stat['path']}")
+                    print(
+                        f"[完成] COM 行数={stat['rows']} 输出={stat['path']} "
+                        f"(命中sheet={stat.get('sheets_ok',0)} 跳过sheet={stat.get('sheets_skip',0)})"
+                    )
+                errs = stat.get("errors", []) or []
+                if errs:
+                    print(f"[COM告警] 跳过异常sheet {len(errs)} 个（示例前{min(3, len(errs))}条）：")
+                    for s in errs[:3]:
+                        print(f"  - {s}")
             except RuntimeError as e:
                 print(f"[COM 不可用] {e}")
     elif choice == "sv1":
@@ -1137,11 +1231,16 @@ def main() -> None:
                 continue
             mapped = {"1": "x11", "2": "x12", "3": "x13", "4": "x14com",
                       "5": "x15", "6": "x16com", "7": "x18"}[sub]
-        else:
+        elif main_choice == "8":
             sub = _show_sub_menu(SURVEY_MENU, ("1", "0"))
             if sub == "0":
                 continue
             mapped = {"1": "sv1"}[sub]
+        else:
+            sub = _show_sub_menu(QUICK_MENU, ("1", "2", "0"))
+            if sub == "0":
+                continue
+            mapped = {"1": "q1", "2": "q2"}[sub]
 
         try:
             dispatch(mapped)

@@ -319,9 +319,10 @@ def run_batch_rename_sheet_37(cfg_path: Path, files: list[Path], log_dir: Path) 
             wb_count += 1
             for ws in wb.worksheets:
                 old_name = ws.title
-                if old_name not in mapping:
+                lookup_name = old_name if old_name in mapping else old_name.strip()
+                if lookup_name not in mapping:
                     continue
-                new_name = mapping[old_name]
+                new_name = mapping[lookup_name]
                 if old_name == new_name:
                     skip += 1
                     continue
@@ -388,9 +389,10 @@ def run_batch_rename_sheet_37_com(cfg_path: Path, files: list[Path], log_dir: Pa
                 for idx in range(1, sheet_count + 1):
                     ws = wb.Worksheets(idx)
                     old_name = str(ws.Name)
-                    if old_name not in mapping:
+                    lookup_name = old_name if old_name in mapping else old_name.strip()
+                    if lookup_name not in mapping:
                         continue
-                    new_name = mapping[old_name]
+                    new_name = mapping[lookup_name]
                     names_without_old = {x for x in existing_names if x != old_name}
                     if _sheet_name_invalid(new_name, names_without_old, old_name):
                         skip += 1

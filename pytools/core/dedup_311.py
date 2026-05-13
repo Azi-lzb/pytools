@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from collections import defaultdict
+from time import perf_counter
 
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
@@ -160,6 +161,7 @@ def run_delete_by_comment(workbook_path: Path, log_dir: Path) -> dict:
 
 def run_check_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
     log = get_logger("3_11_3_check_by_config", log_dir)
+    t0_all = perf_counter()
     groups = defaultdict(list)
     for t in tasks:
         if t.enabled:
@@ -191,11 +193,17 @@ def run_check_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
         if changed:
             wb.save(wb_path)
         wb.close()
-    return {"task_ok": task_ok, "task_skip": task_skip, "marked_rows": marked_total}
+    return {
+        "task_ok": task_ok,
+        "task_skip": task_skip,
+        "marked_rows": marked_total,
+        "elapsed_sec": perf_counter() - t0_all,
+    }
 
 
 def run_delete_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
     log = get_logger("3_11_4_delete_by_config", log_dir)
+    t0_all = perf_counter()
     groups = defaultdict(list)
     for t in tasks:
         if t.enabled:
@@ -226,7 +234,12 @@ def run_delete_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
         if changed:
             wb.save(wb_path)
         wb.close()
-    return {"task_ok": task_ok, "task_skip": task_skip, "deleted_rows": deleted_total}
+    return {
+        "task_ok": task_ok,
+        "task_skip": task_skip,
+        "deleted_rows": deleted_total,
+        "elapsed_sec": perf_counter() - t0_all,
+    }
 
 
 def _headers_same(src_ws, tgt_ws) -> bool:
@@ -293,6 +306,7 @@ def _append_unique_source_to_target(
 
 def run_append_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
     log = get_logger("3_11_5_append_by_config", log_dir)
+    t0_all = perf_counter()
     task_ok = task_skip = appended_total = deleted_total = 0
     src_wb_cache: dict[str, object] = {}
     tgt_wb_cache: dict[str, object] = {}
@@ -302,13 +316,16 @@ def run_append_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
     for t in tasks:
         if not t.enabled:
             continue
+        t0_task = perf_counter()
         if not t.source_wb.exists() or not _workbook_is_supported(t.source_wb):
             task_skip += 1
             log.warning("skip row=%s reason=source_not_found_or_unsupported", t.row_no)
+            log.info("row=%s elapsed=%.2fs", t.row_no, perf_counter() - t0_task)
             continue
         if t.target_wb is None or t.target_ws is None:
             task_skip += 1
             log.warning("skip row=%s reason=target_missing", t.row_no)
+            log.info("row=%s elapsed=%.2fs", t.row_no, perf_counter() - t0_task)
             continue
 
         src_wb_key = str(t.source_wb)
@@ -319,6 +336,7 @@ def run_append_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
         if t.source_ws not in src_wb.sheetnames:
             task_skip += 1
             log.warning("skip row=%s reason=source_sheet_not_found sheet=%s", t.row_no, t.source_ws)
+            log.info("row=%s elapsed=%.2fs", t.row_no, perf_counter() - t0_task)
             continue
         src_ws = src_wb[t.source_ws]
 
@@ -328,6 +346,7 @@ def run_append_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
             if not _workbook_is_supported(t.target_wb):
                 task_skip += 1
                 log.warning("skip row=%s reason=target_unsupported", t.row_no)
+                log.info("row=%s elapsed=%.2fs", t.row_no, perf_counter() - t0_task)
                 continue
             tgt_wb = _open_wb(t.target_wb)
             tgt_wb_cache[tgt_wb_key] = tgt_wb
@@ -348,6 +367,7 @@ def run_append_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
             if not _headers_same(src_ws, tgt_ws):
                 task_skip += 1
                 log.warning("skip row=%s reason=header_mismatch", t.row_no)
+                log.info("row=%s elapsed=%.2fs", t.row_no, perf_counter() - t0_task)
                 continue
 
         key_cols = t.key_cols or list(range(1, _used_col_count(src_ws) + 1))
@@ -361,7 +381,10 @@ def run_append_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
         appended_total += appended
         deleted_total += deleted
         task_ok += 1
-        log.info("ok row=%s appended=%s dedup_deleted=%s", t.row_no, appended, deleted)
+        log.info(
+            "ok row=%s appended=%s dedup_deleted=%s elapsed=%.2fs",
+            t.row_no, appended, deleted, perf_counter() - t0_task
+        )
 
     # 统一落盘：仅保存发生过新增写入的目标工作簿
     for wb_path_text, wb in tgt_wb_cache.items():
@@ -379,6 +402,7 @@ def run_append_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
         "task_skip": task_skip,
         "appended_rows": appended_total,
         "deleted_rows": deleted_total,
+        "elapsed_sec": perf_counter() - t0_all,
     }
 
 

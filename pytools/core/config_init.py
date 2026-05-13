@@ -79,7 +79,7 @@ HEADER_COMMENTS = {
     },
     SHEET_PRINT_CONFIG: {
         "是否启用": "关键字段（程序读取）：Y/是/1 表示启用。",
-        "打印模式": "关键字段（程序读取）：1/2/3；3.10.7 会按 1/2/3 全部执行。",
+        "打印模式": "关键字段（程序读取）：1=保留源格式；2=保留源格式+自动扩列（减少####）；3=快速复制（值+基础格式，速度更快）。3.10.7 会按 1/2/3 全部执行。",
         "源工作簿": "关键字段（程序读取）：源工作簿完整路径。",
         "源工作表": "关键字段（程序读取）：源工作表名（精确匹配）。",
         "源工作表打印区域": "关键字段（程序读取）：可空；支持 A1:H30;A35:H70，多段分号分隔。",
@@ -88,6 +88,10 @@ HEADER_COMMENTS = {
         "FitToPagesWide": "关键字段（程序读取）：分页宽度页数，留空默认 1。",
         "FitToPagesTall": "关键字段（程序读取）：分页高度页数，留空默认 1。",
         "打印方向": "关键字段（程序读取）：横向/纵向；留空按宽高比自动。",
+        "水平居中": "关键字段（程序读取）：Y/是/1 时打印页面水平居中。",
+        "垂直居中": "关键字段（程序读取）：Y/是/1 时打印页面垂直居中。",
+        "不输出批注": "关键字段（程序读取）：Y/是/1 时清除输出文件中的单元格批注。",
+        "零值不输出": "关键字段（程序读取）：Y/是/1 时将 0 值输出为空白。",
         "备注": "备注字段（仅人工说明）：程序不读取。",
     },
     SHEET_CONFIG_RENAME: {
@@ -126,6 +130,7 @@ GLOBAL_DEFAULTS = {
     "源文件扩展名": ".xlsx;.xlsm;.csv",
     "错误策略": "continue",
     "默认编码": "utf-8",
+    "打印零值不输出": "否",
     "时序规则命中策略": "all_match",
     "excel目的格式": "xlsx",
     "word目的格式": "docx",
@@ -194,6 +199,7 @@ def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
 
     created = 0
     repaired = 0
+    details: list[str] = []
 
     if cfg_path.exists():
         wb = load_workbook(cfg_path)
@@ -222,6 +228,16 @@ def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
             d_changed = _ensure_global_defaults(ws) if sheet_name == SHEET_GLOBAL else False
             if h_changed or c_changed or d_changed:
                 repaired += 1
+                changed_items: list[str] = []
+                if h_changed:
+                    changed_items.append("headers")
+                if c_changed:
+                    changed_items.append("comments")
+                if d_changed:
+                    changed_items.append("defaults")
+                details.append(f"{sheet_name}: repaired ({','.join(changed_items)})")
+            else:
+                details.append(f"{sheet_name}: unchanged")
         else:
             ws = wb.create_sheet(sheet_name)
             _ensure_sheet_headers(ws, headers)
@@ -229,6 +245,7 @@ def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
             if sheet_name == SHEET_GLOBAL:
                 _ensure_global_defaults(ws)
             created += 1
+            details.append(f"{sheet_name}: created")
 
     wb.save(cfg_path)
     try:
@@ -236,4 +253,4 @@ def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
     except Exception:
         pass
 
-    return {"created_sheets": created, "repaired_sheets": repaired}
+    return {"created_sheets": created, "repaired_sheets": repaired, "details": details}

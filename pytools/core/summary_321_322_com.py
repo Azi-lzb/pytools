@@ -31,6 +31,7 @@ from .summary_321_322 import (
     _extract_set_info,
     _build_col_headers,
     _split_addr,
+    _safe_sheet_name,
     _supported,
 )
 
@@ -254,40 +255,41 @@ def run_summary_by_comment_com(
                 "模板未识别到可用批注区域（需包含 行区域N/#N 与 列区域N/#N）。"
             )
 
-        # 按 (spec, 位置) 展开，重复名追加 _N 后缀
-        set_layout: list[tuple[str, int]] = []
-        col_layout: list[tuple[str, int]] = []
-        raw_set_headers: list[str] = []
-        raw_col_headers: list[str] = []
-        for spec_key, sp in specs.items():
-            for pos, n in enumerate(sp.set_names):
-                set_layout.append((spec_key, pos))
-                raw_set_headers.append(n)
-            for pos, h in enumerate(sp.col_headers):
-                col_layout.append((spec_key, pos))
-                raw_col_headers.append(h)
-        set_headers = _disambiguate_headers(raw_set_headers)
-        col_headers_flat = _disambiguate_headers(raw_col_headers)
-
         out_wb = Workbook()
-        ws_out = out_wb.active
-        ws_out.title = "汇总"
-        headers = ["工作簿", "工作表"] + set_headers + col_headers_flat + ["行号"]
-        for i, h in enumerate(headers, 1):
-            ws_out.cell(1, i).value = h
-            ws_out.cell(1, i).font = ws_out.cell(1, i).font.copy(bold=True)
-
-        set_loc: dict[tuple[str, int], int] = {
-            key: 3 + i for i, key in enumerate(set_layout)
-        }
-        col_loc: dict[tuple[str, int], int] = {
-            key: 3 + len(set_layout) + i for i, key in enumerate(col_layout)
-        }
+        default_ws = out_wb.active
+        out_wb.remove(default_ws)
+        used_sheet_names: set[str] = set()
+        sheet_ctx: dict[str, dict[str, object]] = {}
+        for spec_key, sp in specs.items():
+            ws = out_wb.create_sheet(_safe_sheet_name(spec_key, used_sheet_names))
+            set_headers = _disambiguate_headers(sp.set_names)
+            col_headers = _disambiguate_headers(sp.col_headers)
+            headers = ["工作簿", "工作表"] + set_headers + col_headers + ["行号"]
+            for i, h in enumerate(headers, 1):
+                ws.cell(1, i).value = h
+                ws.cell(1, i).font = ws.cell(1, i).font.copy(bold=True)
+            sheet_ctx[spec_key] = {
+                "ws": ws,
+                "row_idx": 2,
+                "set_base": 3,
+                "col_base": 3 + len(set_headers),
+                "last_col": len(headers),
+            }
 
         fallback_spec = specs.get("模板")
-        row_idx = 2
         rows_written = 0
         files_hit = 0
+        sheets_ok = 0
+        sheets_skip = 0
+        error_samples: list[str] = []
+
+        def _push_error(wb_name: str, sheet_name: str, step: str, err: Exception) -> None:
+            nonlocal sheets_skip
+            sheets_skip += 1
+            msg = f"wb={wb_name} sheet={sheet_name} step={step} err={err}"
+            log.warning("[COM] skip %s", msg)
+            if len(error_samples) < 20:
+                error_samples.append(msg)
 
         valid_sources = [p for p in source_paths if p.exists() and _supported_com(p)]
         for p in valid_sources:
@@ -305,69 +307,91 @@ def run_summary_by_comment_com(
                     p, app, xls_cache, xls_temp_dir
                 )
                 for src_ws in src_wb.Worksheets:
-                    sname = str(src_ws.Name)
-                    spec = specs.get(sname)
-                    matched_template_name = sname
-                    if spec is None:
-                        spec = fallback_spec
-                        matched_template_name = "模板"
-                    if spec is None:
-                        log.info("skip wb=%s sheet=%s reason=no_template_match", wb_name, sname)
+                    sname = "<unknown>"
+                    try:
+                        sname = str(src_ws.Name)
+                    except Exception as e:
+                        _push_error(wb_name, sname, "sheet_name", e)
                         continue
-                    if specs.get(sname) is None and fallback_spec is not None:
-                        log.info("fallback wb=%s sheet=%s template=模板", wb_name, sname)
+                    try:
+                        spec = specs.get(sname)
+                        matched_template_name = sname
+                        if spec is None:
+                            spec = fallback_spec
+                            matched_template_name = "模板"
+                        if spec is None:
+                            log.info("skip wb=%s sheet=%s reason=no_template_match", wb_name, sname)
+                            continue
+                        if specs.get(sname) is None and fallback_spec is not None:
+                            log.info("fallback wb=%s sheet=%s template=模板", wb_name, sname)
 
-                    # 收集本 spec 涉及的行/列范围，按需读取
-                    accessed_rows: set[int] = set()
-                    accessed_cols: set[int] = set()
-                    for addr in spec.set_addrs:
-                        scol, srow = _split_addr(addr)
-                        accessed_rows.add(srow)
-                        accessed_cols.add(_col2num(scol))
-                    for sr, er, _, _ in spec.row_regions:
-                        for r in range(sr, er + 1):
-                            accessed_rows.add(r)
-                    for _, _, cs, ce in spec.col_regions:
-                        for c in range(cs, ce + 1):
-                            accessed_cols.add(c)
+                        ctx = sheet_ctx[matched_template_name]
+                        ws_out = ctx["ws"]
+                        row_idx = int(ctx["row_idx"])
+                        set_base = int(ctx["set_base"])
+                        col_base = int(ctx["col_base"])
+                        last_col = int(ctx["last_col"])
 
-                    df, _ = _read_src_sheet_via_com(src_ws, accessed_rows, accessed_cols)
-                    if df.shape[0] == 0:
-                        continue
-                    merge_ranges = _load_merge_for_sheet(merge_src_path, sname)
+                        # 收集本 spec 涉及的行/列范围，按需读取
+                        accessed_rows: set[int] = set()
+                        accessed_cols: set[int] = set()
+                        for addr in spec.set_addrs:
+                            scol, srow = _split_addr(addr)
+                            accessed_rows.add(srow)
+                            accessed_cols.add(_col2num(scol))
+                        for sr, er, _, _ in spec.row_regions:
+                            for r in range(sr, er + 1):
+                                accessed_rows.add(r)
+                        for _, _, cs, ce in spec.col_regions:
+                            for c in range(cs, ce + 1):
+                                accessed_cols.add(c)
 
-                    for sr, er, _, _ in spec.row_regions:
-                        for data_row in range(sr, er + 1):
-                            ws_out.cell(row_idx, 1).value = wb_name
-                            ws_out.cell(row_idx, 2).value = sname
+                        try:
+                            df, _ = _read_src_sheet_via_com(src_ws, accessed_rows, accessed_cols)
+                        except Exception as e:
+                            _push_error(wb_name, sname, "range_value2_read", e)
+                            continue
+                        if df.shape[0] == 0:
+                            continue
+                        try:
+                            merge_ranges = _load_merge_for_sheet(merge_src_path, sname)
+                        except Exception as e:
+                            _push_error(wb_name, sname, "merge_load", e)
+                            continue
 
-                            # set 区（按 spec 内位置定位输出列）
-                            for i, addr in enumerate(spec.set_addrs):
-                                if i >= len(spec.set_names):
-                                    break
-                                sc, rr = _split_addr(addr)
-                                target_col = set_loc.get((matched_template_name, i))
-                                if target_col is not None:
-                                    ws_out.cell(row_idx, target_col).value = (
+                        for sr, er, _, _ in spec.row_regions:
+                            for data_row in range(sr, er + 1):
+                                ws_out.cell(row_idx, 1).value = wb_name
+                                ws_out.cell(row_idx, 2).value = sname
+
+                                # set 区（按 spec 内位置定位输出列）
+                                for i, addr in enumerate(spec.set_addrs):
+                                    if i >= len(spec.set_names):
+                                        break
+                                    sc, rr = _split_addr(addr)
+                                    ws_out.cell(row_idx, set_base + i).value = (
                                         _gcv_from_array(df, merge_ranges, rr, _col2num(sc))
                                     )
 
-                            # 列区域（按 spec 内位置定位输出列）
-                            cidx = 0
-                            for _, _, cs, ce in spec.col_regions:
-                                for dc in range(cs, ce + 1):
-                                    if cidx >= len(spec.col_headers):
-                                        break
-                                    target_col = col_loc.get((matched_template_name, cidx))
-                                    if target_col is not None:
-                                        ws_out.cell(row_idx, target_col).value = (
+                                # 列区域（按 spec 内位置定位输出列）
+                                cidx = 0
+                                for _, _, cs, ce in spec.col_regions:
+                                    for dc in range(cs, ce + 1):
+                                        if cidx >= len(spec.col_headers):
+                                            break
+                                        ws_out.cell(row_idx, col_base + cidx).value = (
                                             _gcv_from_array(df, merge_ranges, data_row, dc)
                                         )
-                                    cidx += 1
+                                        cidx += 1
 
-                            ws_out.cell(row_idx, len(headers)).value = data_row
-                            row_idx += 1
-                            rows_written += 1
+                                ws_out.cell(row_idx, last_col).value = data_row
+                                row_idx += 1
+                                rows_written += 1
+                        ctx["row_idx"] = row_idx
+                        sheets_ok += 1
+                    except Exception as e:
+                        _push_error(wb_name, sname, "sheet_process", e)
+                        continue
             finally:
                 safe_close(src_wb)
     finally:
@@ -376,11 +400,35 @@ def run_summary_by_comment_com(
 
     if rows_written == 0:
         out_wb.close()
-        return {"saved": False, "rows": 0, "path": ""}
+        return {
+            "saved": False,
+            "rows": 0,
+            "path": "",
+            "files_hit": files_hit,
+            "sheets_ok": sheets_ok,
+            "sheets_skip": sheets_skip,
+            "errors": error_samples,
+        }
 
-    ws_out.freeze_panes = "A2"
+    for ctx in sheet_ctx.values():
+        ws = ctx["ws"]
+        if int(ctx["row_idx"]) > 2:
+            ws.freeze_panes = "A2"
     out_path = output_dir / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_按批注汇总（模板+源文件）_COM.xlsx"
     out_wb.save(out_path)
     out_wb.close()
-    log.info("[COM] done files=%s rows=%s output=%s", files_hit, rows_written, out_path)
-    return {"saved": True, "rows": rows_written, "path": str(out_path)}
+    log.info(
+        "[COM] done files=%s sheets_ok=%s sheets_skip=%s rows=%s output=%s",
+        files_hit, sheets_ok, sheets_skip, rows_written, out_path
+    )
+    if error_samples:
+        log.info("[COM] error_samples(top%s)=%s", len(error_samples), " | ".join(error_samples))
+    return {
+        "saved": True,
+        "rows": rows_written,
+        "path": str(out_path),
+        "files_hit": files_hit,
+        "sheets_ok": sheets_ok,
+        "sheets_skip": sheets_skip,
+        "errors": error_samples,
+    }
