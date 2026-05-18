@@ -160,6 +160,27 @@ def _ensure_header_comments(ws, sheet_name: str, headers: list[str]) -> bool:
     return changed
 
 
+def _ensure_rename_sheet_extra_cells(ws) -> bool:
+    changed = False
+    if ws["L1"].value != "根据文件内容重命名":
+        ws["L1"].value = "根据文件内容重命名"
+        changed = True
+    if ws["L2"].value is None or str(ws["L2"].value).strip() == "":
+        ws["L2"].value = "sheet1@A1;sheet2@A2"
+        changed = True
+    c1 = ws["L1"].comment.text if ws["L1"].comment is not None else ""
+    t1 = "关键字段（程序读取）：4.6 使用，L2 填写取值规则。"
+    if c1 != t1:
+        ws["L1"].comment = Comment(t1, "pytools")
+        changed = True
+    c2 = ws["L2"].comment.text if ws["L2"].comment is not None else ""
+    t2 = "关键字段（程序读取）：4.6 使用，格式 sheet名@单元格;sheet名@单元格，例如 sheet1@A1;sheet2@A2。"
+    if c2 != t2:
+        ws["L2"].comment = Comment(t2, "pytools")
+        changed = True
+    return changed
+
+
 def _ensure_global_defaults(ws) -> bool:
     """仅在键不存在或值为空时回填默认值，不覆盖已有非空值。"""
     changed = False
@@ -225,14 +246,17 @@ def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
             ws = wb[sheet_name]
             h_changed = _ensure_sheet_headers(ws, headers)
             c_changed = _ensure_header_comments(ws, sheet_name, headers)
+            r_changed = _ensure_rename_sheet_extra_cells(ws) if sheet_name == SHEET_CONFIG_RENAME else False
             d_changed = _ensure_global_defaults(ws) if sheet_name == SHEET_GLOBAL else False
-            if h_changed or c_changed or d_changed:
+            if h_changed or c_changed or d_changed or r_changed:
                 repaired += 1
                 changed_items: list[str] = []
                 if h_changed:
                     changed_items.append("headers")
                 if c_changed:
                     changed_items.append("comments")
+                if r_changed:
+                    changed_items.append("extra_cells")
                 if d_changed:
                     changed_items.append("defaults")
                 details.append(f"{sheet_name}: repaired ({','.join(changed_items)})")
@@ -242,6 +266,8 @@ def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
             ws = wb.create_sheet(sheet_name)
             _ensure_sheet_headers(ws, headers)
             _ensure_header_comments(ws, sheet_name, headers)
+            if sheet_name == SHEET_CONFIG_RENAME:
+                _ensure_rename_sheet_extra_cells(ws)
             if sheet_name == SHEET_GLOBAL:
                 _ensure_global_defaults(ws)
             created += 1

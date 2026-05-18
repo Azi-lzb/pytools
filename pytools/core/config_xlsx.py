@@ -82,6 +82,7 @@ FEATURE_REQUIRED = {
     "t4": [SHEET_GLOBAL],
     "t5": [SHEET_GLOBAL],
     "t7": [SHEET_CONFIG_RENAME],
+    "t8": [SHEET_CONFIG_RENAME],
     "s21": [SHEET_GLOBAL],
     "s22": [SHEET_GLOBAL],
     "s21com": [SHEET_GLOBAL],

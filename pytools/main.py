@@ -55,6 +55,7 @@ from pytools.core.convert_33_34_35_37 import (
     run_word_convert_36,
     run_batch_rename_sheet_37,
     run_batch_rename_sheet_37_com,
+    run_batch_rename_by_content_46,
 )
 from pytools.core.feature_1_1_split_village_bank import run_split_village_bank
 from pytools.core.feature_1_2_normalize_institution import run_normalize_institution
@@ -150,6 +151,7 @@ CONVERT_MENU = """
   3  [COM] 批量Word格式转换
   4  批量修改Sheet名
   5  [自动路由COM] 批量修改Sheet名
+  6  根据文件内容重命名（重命名配置！L2）
   0  返回
 ----------------------
 """
@@ -848,6 +850,13 @@ def dispatch(choice: str) -> None:
                 )
             except RuntimeError as e:
                 print(f"[COM 不可用] {e}")
+    elif choice == "t8":
+        srcs = _pick_source_files("选择要根据内容重命名的文件（可多选）")
+        if not srcs:
+            print("[已取消]")
+            return
+        stat = run_batch_rename_by_content_46(CFG_PATH, srcs, g.log_dir)
+        print(f"[完成] 配置L2={stat.get('spec','')} 成功={stat['ok']} 跳过={stat['skip']}")
     elif choice == "s21":
         srcs = _pick_source_files("选择按使用区域汇总的源文件（可多选）")
         if not srcs:
@@ -1211,10 +1220,10 @@ def main() -> None:
                       "5": "p1com", "6": "p3com", "7": "p7com",
                       "8": "ppdf"}[sub]
         elif main_choice == "4":
-            sub = _show_sub_menu(CONVERT_MENU, ("1", "2", "3", "4", "5", "0"))
+            sub = _show_sub_menu(CONVERT_MENU, ("1", "2", "3", "4", "5", "6", "0"))
             if sub == "0":
                 continue
-            mapped = {"1": "t3", "2": "t4", "3": "t5", "4": "t7", "5": "t7com"}[sub]
+            mapped = {"1": "t3", "2": "t4", "3": "t5", "4": "t7", "5": "t7com", "6": "t8"}[sub]
         elif main_choice == "5":
             sub = _show_sub_menu(CONFIG_MENU, ("1", "2", "0"))
             if sub == "0":

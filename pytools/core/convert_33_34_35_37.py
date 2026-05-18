@@ -3,9 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import re
+import gc
 
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.utils.cell import coordinate_from_string
 
 from .config_xlsx import SHEET_CONFIG_RENAME
 from .logger import get_logger
@@ -301,6 +303,88 @@ def _load_sheet_rename_map(cfg_path: Path) -> dict[str, str]:
     return mp
 
 
+def _load_content_rename_spec(cfg_path: Path) -> str:
+    wb = load_workbook(cfg_path, read_only=True, data_only=True)
+    try:
+        if SHEET_CONFIG_RENAME not in wb.sheetnames:
+            return ""
+        ws = wb[SHEET_CONFIG_RENAME]
+        v = ws["L2"].value
+        return _norm(v)
+    finally:
+        wb.close()
+
+
+def _sanitize_name_part(text: str) -> str:
+    s = _norm(text)
+    if not s:
+        return ""
+    s = re.sub(r'[<>:"/\\|?*]', "_", s)
+    s = re.sub(r"\s+", " ", s).strip().strip(".")
+    return s
+
+
+def _parse_sheet_cell_spec(spec: str) -> list[tuple[str, str]]:
+    parts = [x.strip() for x in spec.replace("；", ";").split(";") if x and x.strip()]
+    out: list[tuple[str, str]] = []
+    for p in parts:
+        if "@" not in p:
+            raise ValueError(f"L2 配置格式错误: {p}（应为 sheet@A1）")
+        sheet_name, addr = p.split("@", 1)
+        sheet_name = _norm(sheet_name)
+        addr = _norm(addr).upper()
+        if not sheet_name or not addr:
+            raise ValueError(f"L2 配置格式错误: {p}（sheet 或地址为空）")
+        try:
+            coordinate_from_string(addr)
+        except Exception:
+            raise ValueError(f"L2 地址非法: {p}") from None
+        out.append((sheet_name, addr))
+    if not out:
+        raise ValueError("L2 为空，无法执行根据文件内容重命名。")
+    return out
+
+
+def _read_cells_openpyxl(path: Path, items: list[tuple[str, str]]) -> list[str]:
+    wb = load_workbook(path, data_only=True, keep_vba=(path.suffix.lower() == ".xlsm"))
+    try:
+        vals: list[str] = []
+        for sheet_name, addr in items:
+            if sheet_name not in wb.sheetnames:
+                vals.append(f"{sheet_name}!{addr}")
+                continue
+            ws = wb[sheet_name]
+            v = ws[addr].value
+            txt = _sanitize_name_part("" if v is None else str(v))
+            vals.append(txt or f"{sheet_name}!{addr}")
+        return vals
+    finally:
+        wb.close()
+        del wb
+        gc.collect()
+
+
+def _read_cells_com(app, path: Path, items: list[tuple[str, str]]) -> list[str]:
+    wb = app.Workbooks.Open(str(path), UpdateLinks=0, ReadOnly=True)
+    try:
+        vals: list[str] = []
+        for sheet_name, addr in items:
+            try:
+                ws = wb.Worksheets(sheet_name)
+            except Exception:
+                vals.append(f"{sheet_name}!{addr}")
+                continue
+            try:
+                v = ws.Range(addr).Value2
+            except Exception:
+                v = None
+            txt = _sanitize_name_part("" if v is None else str(v))
+            vals.append(txt or f"{sheet_name}!{addr}")
+        return vals
+    finally:
+        wb.Close(SaveChanges=False)
+
+
 def run_batch_rename_sheet_37(cfg_path: Path, files: list[Path], log_dir: Path) -> dict[str, int]:
     log = get_logger("3_7_batch_rename_sheet", log_dir)
     mapping = _load_sheet_rename_map(cfg_path)
@@ -339,6 +423,73 @@ def run_batch_rename_sheet_37(cfg_path: Path, files: list[Path], log_dir: Path) 
         finally:
             wb.close()
     return {"workbooks": wb_count, "rename_ok": rename_ok, "skip": skip}
+
+
+def run_batch_rename_by_content_46(cfg_path: Path, files: list[Path], log_dir: Path) -> dict[str, int]:
+    log = get_logger("4_6_batch_rename_by_content", log_dir)
+    spec_text = _load_content_rename_spec(cfg_path)
+    items = _parse_sheet_cell_spec(spec_text)
+
+    ok = skip = 0
+    com_candidates: list[Path] = []
+    for p in files:
+        if not p.exists() or not _excel_like(p):
+            skip += 1
+            log.warning("skip file=%s reason=not_excel_like_or_missing", p)
+            continue
+        if p.suffix.lower() in (".xls", ".xlt"):
+            com_candidates.append(p)
+            continue
+        try:
+            vals = _read_cells_openpyxl(p, items)
+            prefix = "_".join([x for x in vals if x])[:180]
+            new_name = f"{prefix}_{p.name}" if prefix else p.name
+            tgt = p.with_name(new_name)
+            if tgt.resolve() == p.resolve():
+                skip += 1
+                log.info("skip file=%s reason=name_same", p.name)
+                continue
+            if tgt.exists():
+                tgt = _next_path(tgt)
+            os.rename(p, tgt)
+            ok += 1
+            log.info("ok old=%s new=%s", p.name, tgt.name)
+        except Exception as e:
+            skip += 1
+            log.warning("skip file=%s reason=rename_failed err=%s", p.name, e)
+
+    if com_candidates:
+        app = None
+        try:
+            app, engine = _start_excel_app()
+            for p in com_candidates:
+                try:
+                    vals = _read_cells_com(app, p, items)
+                    prefix = "_".join([x for x in vals if x])[:180]
+                    new_name = f"{prefix}_{p.name}" if prefix else p.name
+                    tgt = p.with_name(new_name)
+                    if tgt.resolve() == p.resolve():
+                        skip += 1
+                        log.info("skip file=%s reason=name_same", p.name)
+                        continue
+                    if tgt.exists():
+                        tgt = _next_path(tgt)
+                    os.rename(p, tgt)
+                    ok += 1
+                    log.info("ok old=%s new=%s engine=%s", p.name, tgt.name, engine)
+                except Exception as e:
+                    skip += 1
+                    log.warning("skip file=%s reason=com_rename_failed err=%s", p.name, e)
+        except Exception as e:
+            skip += len(com_candidates)
+            log.warning("skip com_files=%s reason=start_excel_failed err=%s", len(com_candidates), e)
+        finally:
+            if app is not None:
+                try:
+                    app.Quit()
+                except Exception:
+                    pass
+    return {"ok": ok, "skip": skip, "spec": spec_text}
 
 
 def _sheet_name_invalid(new_name: str, existing_names: set[str], old_name: str) -> bool:
