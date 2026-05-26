@@ -17,6 +17,10 @@ from pytools.core.wide_397_398 import run_wide_summary
 from pytools.core.compare_393 import run_compare
 
 
+def _date_col_text(s: pd.Series) -> pd.Series:
+    return pd.to_datetime(s).dt.strftime("%Y-%m-%d")
+
+
 def _make_source(path: Path, sheet_name: str, df_2d: list[list]) -> None:
     df = pd.DataFrame(df_2d)
     with pd.ExcelWriter(path, engine="openpyxl") as w:
@@ -33,10 +37,21 @@ def _make_config(cfg_path: Path, input_dir: Path, output_dir: Path, log_dir: Pat
         ("源文件扩展名", ".xlsx", ""),
     ], columns=["键", "值", "备注"])
 
-    rule_row = ["是", "存款规则", "存款", "本外币", 1, "2",
-                "本月余额", "活期",
-                3, "", 2, "", "合计", "", ""]
-    t_df = pd.DataFrame([rule_row], columns=TIMELINE_COLS)
+    rule = {c: "" for c in TIMELINE_COLS}
+    rule.update({
+        "是否启用": "是",
+        "规则名称": "存款规则",
+        "工作簿关键字": "存款",
+        "工作表关键字": "本外币",
+        "行头列": 1,
+        "列表头行": "2",
+        "必含列头": "本月余额",
+        "必含行头": "活期",
+        "数据起始行": 3,
+        "数据起始列": 2,
+        "跳过关键字": "合计",
+    })
+    t_df = pd.DataFrame([rule], columns=TIMELINE_COLS)
 
     pm_row = ["是", "活期标准化", "存款规则", "", "", "行头", "精确", "活期存款", "活期", ""]
     p_df = pd.DataFrame([pm_row], columns=PATH_MAP_COLS)
@@ -111,6 +126,17 @@ def test_5_validate_per_feature(env):
         assert validate_sheets_for_feature(f, cfg) == []
 
 
+def test_timeline_target_dedup_cols_parse(env):
+    cfg, *_ = env
+    df = pd.read_excel(cfg, sheet_name=SHEET_TIMELINE_RULE, dtype=object)
+    df.loc[0, "目标去重列"] = "数据日期;机构代码，行头路径"
+    with pd.ExcelWriter(cfg, engine="openpyxl", mode="a", if_sheet_exists="replace") as w:
+        df.to_excel(w, sheet_name=SHEET_TIMELINE_RULE, index=False)
+
+    rule = load_timeline_rules(cfg)[0]
+    assert rule.target_dedup_cols == ["数据日期", "机构代码", "行头路径"]
+
+
 def test_2_timeline_slim(env):
     cfg, _, _, _, _ = env
     g = load_global(cfg)
@@ -123,7 +149,7 @@ def test_2_timeline_slim(env):
     assert list(df.columns) == ["源文件", "工作表名", "规则名称", "数据日期",
                                  "行头路径", "列头路径", "数值"]
     # 2026-04: 活期/定期 各 2 列 = 4 行
-    apr = df[df["数据日期"] == "2026-04"]
+    apr = df[_date_col_text(df["数据日期"]) == "2026-04-30"]
     assert len(apr) == 4
     # 路径标准化生效：行头不应再出现「活期存款」
     assert "活期存款" not in set(apr["行头路径"])
@@ -140,12 +166,55 @@ def test_3_4_wide_suffix_diff(env):
     df_with = pd.read_excel(out_with, sheet_name="存款规则")
     df_no = pd.read_excel(out_no, sheet_name="存款规则")
     # 5 月源里两条「活期存款」（标准化后→「活期」）
-    may_with = df_with[df_with["数据日期"] == "2026-05"]["行头路径"].tolist()
-    may_no = df_no[df_no["数据日期"] == "2026-05"]["行头路径"].tolist()
+    may_with = df_with[_date_col_text(df_with["数据日期"]) == "2026-05-31"]["行头路径"].tolist()
+    may_no = df_no[_date_col_text(df_no["数据日期"]) == "2026-05-31"]["行头路径"].tolist()
     # 加后缀模式：保留 2 行（活期_1, 活期_2）
     assert sum(1 for r in may_with if r.startswith("活期")) == 2
     # 不加后缀模式：合并冲突，只剩 1 行（保留首值）
     assert may_no.count("活期") == 1
+
+
+def test_wide_target_write_dedup_ignores_workbook_name(env):
+    cfg, inp, out, _, src_a = env
+    target = out / "target.xlsx"
+    df = pd.read_excel(cfg, sheet_name=SHEET_TIMELINE_RULE, dtype=object)
+    df.loc[0, "目标工作簿路径"] = str(target)
+    df.loc[0, "目标工作表"] = "汇总"
+    df.loc[0, "启用目标写入"] = "是"
+    with pd.ExcelWriter(cfg, engine="openpyxl", mode="a", if_sheet_exists="replace") as w:
+        df.to_excel(w, sheet_name=SHEET_TIMELINE_RULE, index=False)
+
+    g = load_global(cfg)
+    rules = load_timeline_rules(cfg)
+    pmaps = load_path_maps(cfg)
+    run_wide_summary(rules, pmaps, g, row_suffix_enabled=False, source_paths=[src_a])
+    first = pd.read_excel(target, sheet_name="汇总", dtype=object)
+
+    renamed = inp / "改名后_存款表_202604.xlsx"
+    shutil.copy2(src_a, renamed)
+    run_wide_summary(rules, pmaps, g, row_suffix_enabled=False, source_paths=[renamed])
+    second = pd.read_excel(target, sheet_name="汇总", dtype=object)
+
+    assert len(second) == len(first)
+
+
+def test_wide_target_write_skips_missing_explicit_dedup_col(env):
+    cfg, _, out, _, src_a = env
+    target = out / "target_missing_key.xlsx"
+    df = pd.read_excel(cfg, sheet_name=SHEET_TIMELINE_RULE, dtype=object)
+    df.loc[0, "目标工作簿路径"] = str(target)
+    df.loc[0, "目标工作表"] = "汇总"
+    df.loc[0, "启用目标写入"] = "是"
+    df.loc[0, "目标去重列"] = "不存在列"
+    with pd.ExcelWriter(cfg, engine="openpyxl", mode="a", if_sheet_exists="replace") as w:
+        df.to_excel(w, sheet_name=SHEET_TIMELINE_RULE, index=False)
+
+    g = load_global(cfg)
+    rules = load_timeline_rules(cfg)
+    pmaps = load_path_maps(cfg)
+    run_wide_summary(rules, pmaps, g, row_suffix_enabled=False, source_paths=[src_a])
+
+    assert not target.exists()
 
 
 def test_1_compare_pass_and_diff(env):

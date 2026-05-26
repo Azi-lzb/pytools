@@ -38,6 +38,7 @@ from .wide_397_398 import (
     _is_wide_rule_compatible,
     _disambiguate_headers,
     _merged_value,
+    _resolve_target_dedup_idx,
 )
 
 
@@ -304,8 +305,10 @@ def run_wide_summary_com(rules: list[TimelineRule], path_maps: list[PathMapRule]
             continue
         header = list(df_t.columns)
         rs = df_t.values.tolist()
-        key_idx = list(range(len(header)))
         set_headers = rule_set_headers.get(rule.name, [])
+        key_idx = _resolve_target_dedup_idx(rule, header, set_headers, log)
+        if key_idx is None:
+            continue
         if getattr(rule, "row_header_col_specified", True):
             required_prefix = ["工作簿名", "工作表名", "数据日期"] + set_headers + ["行头路径"]
         else:
@@ -320,8 +323,9 @@ def run_wide_summary_com(rules: list[TimelineRule], path_maps: list[PathMapRule]
             log.warning(f"跳过写入目标 {rule.target_wb_path}::{rule.target_sheet}: 表头不匹配（保护旧数据）")
         else:
             log.info(
-                "追加到目标 %s::%s 输入=%s 批内去重后=%s 目标去重后新增=%s",
+                "追加到目标 %s::%s 去重列=%s 输入=%s 批内去重后=%s 目标去重后新增=%s",
                 rule.target_wb_path, rule.target_sheet,
+                ",".join(header[i] for i in key_idx),
                 stat.get("input_rows", 0),
                 stat.get("batch_dedup_rows", 0),
                 stat.get("existing_filtered_rows", 0),

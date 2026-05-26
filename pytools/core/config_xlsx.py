@@ -20,9 +20,9 @@ TIMELINE_COLS = [
     "行头列", "列表头行",
     "必含列头", "必含行头",
     "数据起始行", "数据结束行", "数据起始列", "数据结束列",
-    "跳过关键字", "目标工作簿路径", "目标工作表", "启用目标写入", "set区域",
+    "跳过关键字", "目标工作簿路径", "目标工作表", "启用目标写入", "set区域", "目标去重列",
 ]
-TIMELINE_REQUIRED_COLS = [c for c in TIMELINE_COLS if c not in ("启用目标写入", "set区域")]
+TIMELINE_REQUIRED_COLS = [c for c in TIMELINE_COLS if c not in ("启用目标写入", "set区域", "目标去重列")]
 PATH_MAP_COLS = [
     "是否启用", "映射名称", "适用规则名",
     "工作簿关键字", "工作表关键字",
@@ -46,7 +46,8 @@ PRINT_CONFIG_COLS = [
     "备注",
 ]
 CONFIG_RENAME_COLS = [
-    "简称", "全称", "占位C", "代码", "全称(代码映射)", "占位F", "键", "值", "占位I", "原表名", "新表名",
+    "简称", "全称", "占位C", "代码", "全称(代码映射)", "占位F", "键", "值", "占位I",
+    "原表名", "新表名", "根据文件内容重命名", "原文件名片段", "新文件名片段",
 ]
 INSTITUTION_MAPPING_COLS = [
     "原始机构名称", "映射后机构名称", "是否为外资行",
@@ -83,6 +84,8 @@ FEATURE_REQUIRED = {
     "t5": [SHEET_GLOBAL],
     "t7": [SHEET_CONFIG_RENAME],
     "t8": [SHEET_CONFIG_RENAME],
+    "t9": [SHEET_CONFIG_RENAME],
+    "t10": [SHEET_CONFIG_RENAME],
     "s21": [SHEET_GLOBAL],
     "s22": [SHEET_GLOBAL],
     "s21com": [SHEET_GLOBAL],
@@ -141,6 +144,7 @@ class TimelineRule:
     target_write_enabled: bool = True
     set_items: list[tuple[str, str]] = field(default_factory=list)  # [(alias, addr)]
     set_parse_error: str = ""
+    target_dedup_cols: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -169,7 +173,7 @@ def _split(v, sep=";") -> list[str]:
     s = str(v).strip()
     if not s:
         return []
-    return [p.strip() for p in s.replace("；", ";").replace(",", ";").split(sep) if p.strip()]
+    return [p.strip() for p in s.replace("；", ";").replace("，", ";").replace(",", ";").split(sep) if p.strip()]
 
 
 def _to_int(v, default=0) -> int:
@@ -359,6 +363,7 @@ def load_timeline_rules(cfg_path: Path) -> list[TimelineRule]:
             target_write_enabled=target_write_enabled,
             set_items=set_items,
             set_parse_error=set_err,
+            target_dedup_cols=_split(row.get("目标去重列")),
         ))
     return rules
 

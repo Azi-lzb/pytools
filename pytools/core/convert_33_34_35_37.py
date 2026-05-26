@@ -303,6 +303,26 @@ def _load_sheet_rename_map(cfg_path: Path) -> dict[str, str]:
     return mp
 
 
+def _load_file_local_rename_map(cfg_path: Path) -> list[tuple[str, str]]:
+    df = _load_config_rename_df(cfg_path)
+    out: list[tuple[str, str]] = []
+    for _, row in df.iterrows():
+        src = _norm(row.get("原文件名片段"))
+        dst = _norm(row.get("新文件名片段"))
+        if src:
+            out.append((src, dst))
+    return out
+
+
+def _apply_local_name_map(name: str, mapping: list[tuple[str, str]]) -> str:
+    stem = Path(name).stem
+    suffix = Path(name).suffix
+    new_stem = stem
+    for src, dst in mapping:
+        new_stem = new_stem.replace(src, dst)
+    return f"{new_stem}{suffix}"
+
+
 def _load_content_rename_spec(cfg_path: Path) -> str:
     wb = load_workbook(cfg_path, read_only=True, data_only=True)
     try:
@@ -322,6 +342,46 @@ def _sanitize_name_part(text: str) -> str:
     s = re.sub(r'[<>:"/\\|?*]', "_", s)
     s = re.sub(r"\s+", " ", s).strip().strip(".")
     return s
+
+
+def _content_prefix_items(vals: list[str]) -> list[str]:
+    return [x for x in (_sanitize_name_part(v) for v in vals) if x]
+
+
+def _already_renamed_by_content(file_name: str, prefix_items: list[str]) -> bool:
+    if not prefix_items:
+        return False
+    stem = Path(file_name).stem
+    first_part = stem.split("_", 1)[0]
+    haystacks = (first_part, stem)
+    return all(any(item in h for h in haystacks) for item in prefix_items)
+
+
+def _content_prefix(prefix_items: list[str]) -> str:
+    prefix = "_".join(prefix_items)
+    return f"{prefix}_" if prefix else ""
+
+
+def _remove_content_prefix(file_name: str, prefix_items: list[str]) -> str | None:
+    prefix = _content_prefix(prefix_items)
+    if not prefix:
+        return None
+    stem = Path(file_name).stem
+    suffix = Path(file_name).suffix
+    changed = False
+    while stem.startswith(prefix):
+        stem = stem[len(prefix):]
+        changed = True
+    item_set = set(prefix_items)
+    while "_" in stem:
+        head, rest = stem.split("_", 1)
+        if head not in item_set:
+            break
+        stem = rest
+        changed = True
+    if not changed or not stem:
+        return None
+    return f"{stem}{suffix}"
 
 
 def _parse_sheet_cell_spec(spec: str) -> list[tuple[str, str]]:
@@ -442,7 +502,15 @@ def run_batch_rename_by_content_46(cfg_path: Path, files: list[Path], log_dir: P
             continue
         try:
             vals = _read_cells_openpyxl(p, items)
-            prefix = "_".join([x for x in vals if x])[:180]
+            prefix_items = _content_prefix_items(vals)
+            if _already_renamed_by_content(p.name, prefix_items):
+                skip += 1
+                log.info(
+                    "skip file=%s reason=already_renamed_by_content items=%s",
+                    p.name, "|".join(prefix_items),
+                )
+                continue
+            prefix = "_".join(prefix_items)[:180]
             new_name = f"{prefix}_{p.name}" if prefix else p.name
             tgt = p.with_name(new_name)
             if tgt.resolve() == p.resolve():
@@ -465,7 +533,15 @@ def run_batch_rename_by_content_46(cfg_path: Path, files: list[Path], log_dir: P
             for p in com_candidates:
                 try:
                     vals = _read_cells_com(app, p, items)
-                    prefix = "_".join([x for x in vals if x])[:180]
+                    prefix_items = _content_prefix_items(vals)
+                    if _already_renamed_by_content(p.name, prefix_items):
+                        skip += 1
+                        log.info(
+                            "skip file=%s reason=already_renamed_by_content items=%s engine=%s",
+                            p.name, "|".join(prefix_items), engine,
+                        )
+                        continue
+                    prefix = "_".join(prefix_items)[:180]
                     new_name = f"{prefix}_{p.name}" if prefix else p.name
                     tgt = p.with_name(new_name)
                     if tgt.resolve() == p.resolve():
@@ -490,6 +566,109 @@ def run_batch_rename_by_content_46(cfg_path: Path, files: list[Path], log_dir: P
                 except Exception:
                     pass
     return {"ok": ok, "skip": skip, "spec": spec_text}
+
+
+def run_batch_unrename_by_content_47(cfg_path: Path, files: list[Path], log_dir: Path) -> dict[str, int]:
+    log = get_logger("4_7_batch_unrename_by_content", log_dir)
+    spec_text = _load_content_rename_spec(cfg_path)
+    items = _parse_sheet_cell_spec(spec_text)
+
+    ok = skip = 0
+    com_candidates: list[Path] = []
+    for p in files:
+        if not p.exists() or not _excel_like(p):
+            skip += 1
+            log.warning("skip file=%s reason=not_excel_like_or_missing", p)
+            continue
+        if p.suffix.lower() in (".xls", ".xlt"):
+            com_candidates.append(p)
+            continue
+        try:
+            vals = _read_cells_openpyxl(p, items)
+            prefix_items = _content_prefix_items(vals)
+            new_name = _remove_content_prefix(p.name, prefix_items)
+            if not new_name:
+                skip += 1
+                log.info(
+                    "skip file=%s reason=prefix_not_matched items=%s",
+                    p.name, "|".join(prefix_items),
+                )
+                continue
+            tgt = p.with_name(new_name)
+            if tgt.exists():
+                tgt = _next_path(tgt)
+            os.rename(p, tgt)
+            ok += 1
+            log.info("ok old=%s new=%s", p.name, tgt.name)
+        except Exception as e:
+            skip += 1
+            log.warning("skip file=%s reason=unrename_failed err=%s", p.name, e)
+
+    if com_candidates:
+        app = None
+        try:
+            app, engine = _start_excel_app()
+            for p in com_candidates:
+                try:
+                    vals = _read_cells_com(app, p, items)
+                    prefix_items = _content_prefix_items(vals)
+                    new_name = _remove_content_prefix(p.name, prefix_items)
+                    if not new_name:
+                        skip += 1
+                        log.info(
+                            "skip file=%s reason=prefix_not_matched items=%s engine=%s",
+                            p.name, "|".join(prefix_items), engine,
+                        )
+                        continue
+                    tgt = p.with_name(new_name)
+                    if tgt.exists():
+                        tgt = _next_path(tgt)
+                    os.rename(p, tgt)
+                    ok += 1
+                    log.info("ok old=%s new=%s engine=%s", p.name, tgt.name, engine)
+                except Exception as e:
+                    skip += 1
+                    log.warning("skip file=%s reason=com_unrename_failed err=%s", p.name, e)
+        except Exception as e:
+            skip += len(com_candidates)
+            log.warning("skip com_files=%s reason=start_excel_failed err=%s", len(com_candidates), e)
+        finally:
+            if app is not None:
+                try:
+                    app.Quit()
+                except Exception:
+                    pass
+    return {"ok": ok, "skip": skip, "spec": spec_text}
+
+
+def run_batch_rename_local_map_48(cfg_path: Path, files: list[Path], log_dir: Path) -> dict[str, int]:
+    log = get_logger("4_8_batch_rename_local_map", log_dir)
+    mapping = _load_file_local_rename_map(cfg_path)
+    if not mapping:
+        raise ValueError("重命名配置 缺少 M/N 列局部文件名映射。")
+
+    ok = skip = 0
+    for p in files:
+        if not p.exists() or not p.is_file():
+            skip += 1
+            log.warning("skip file=%s reason=not_file_or_missing", p)
+            continue
+        try:
+            new_name = _apply_local_name_map(p.name, mapping)
+            if new_name == p.name:
+                skip += 1
+                log.info("skip file=%s reason=no_fragment_matched", p.name)
+                continue
+            tgt = p.with_name(new_name)
+            if tgt.exists():
+                tgt = _next_path(tgt)
+            os.rename(p, tgt)
+            ok += 1
+            log.info("ok old=%s new=%s", p.name, tgt.name)
+        except Exception as e:
+            skip += 1
+            log.warning("skip file=%s reason=local_map_rename_failed err=%s", p.name, e)
+    return {"ok": ok, "skip": skip, "rules": len(mapping)}
 
 
 def _sheet_name_invalid(new_name: str, existing_names: set[str], old_name: str) -> bool:

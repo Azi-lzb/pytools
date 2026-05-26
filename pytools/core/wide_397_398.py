@@ -57,6 +57,43 @@ def _disambiguate_headers(names: list[str]) -> list[str]:
     return out
 
 
+def _resolve_target_dedup_idx(
+    rule: TimelineRule,
+    header: list[str],
+    set_headers: list[str],
+    log,
+) -> list[int] | None:
+    """宽表目标写入去重键：显式配置优先，否则按业务默认键推导。"""
+    explicit_cols = list(getattr(rule, "target_dedup_cols", []) or [])
+    if explicit_cols:
+        missing = [c for c in explicit_cols if c not in header]
+        if missing:
+            log.warning(
+                "规则[%s] 目标去重列不存在，已跳过目标写入: %s",
+                rule.name,
+                ";".join(missing),
+            )
+            return None
+        key_cols = explicit_cols
+    else:
+        key_cols = ["数据日期"]
+        key_cols.extend(h for h in set_headers if h in header)
+        if "行头路径" in header:
+            key_cols.append("行头路径")
+        else:
+            fixed = {"工作簿名", "工作表名", "数据日期", *set_headers}
+            dynamic_cols = [c for c in header if c not in fixed]
+            if dynamic_cols:
+                key_cols.append(dynamic_cols[0])
+
+    seen: set[str] = set()
+    key_cols = [c for c in key_cols if c in header and not (c in seen or seen.add(c))]
+    if not key_cols:
+        log.warning("规则[%s] 未能解析目标去重列，已跳过目标写入", rule.name)
+        return None
+    return [header.index(c) for c in key_cols]
+
+
 def _merged_value(df, merge_ranges, r: int, c: int):
     rows_n, cols_n = df.shape
     if r < 0 or c < 0 or r >= rows_n or c >= cols_n:
@@ -277,9 +314,10 @@ def run_wide_summary(rules: list[TimelineRule], path_maps: list[PathMapRule],
             continue
         header = list(df.columns)
         rs = df.values.tolist()
-        # 宽表写目标按整行全列去重，避免仅按前四列导致误判。
-        key_idx = list(range(len(header)))
         set_headers = rule_set_headers.get(rule.name, [])
+        key_idx = _resolve_target_dedup_idx(rule, header, set_headers, log)
+        if key_idx is None:
+            continue
         if getattr(rule, "row_header_col_specified", True):
             required_prefix = ["工作簿名", "工作表名", "数据日期"] + set_headers + ["行头路径"]
         else:
@@ -292,8 +330,9 @@ def run_wide_summary(rules: list[TimelineRule], path_maps: list[PathMapRule],
             log.warning(f"跳过写入目标 {rule.target_wb_path}::{rule.target_sheet}: 表头不匹配（保护旧数据）")
         else:
             log.info(
-                "追加到目标 %s::%s 输入=%s 批内去重后=%s 目标去重后新增=%s",
+                "追加到目标 %s::%s 去重列=%s 输入=%s 批内去重后=%s 目标去重后新增=%s",
                 rule.target_wb_path, rule.target_sheet,
+                ",".join(header[i] for i in key_idx),
                 stat.get("input_rows", 0),
                 stat.get("batch_dedup_rows", 0),
                 stat.get("existing_filtered_rows", 0)

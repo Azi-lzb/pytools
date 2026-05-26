@@ -1,10 +1,63 @@
 from __future__ import annotations
+from datetime import date, datetime
 from pathlib import Path
 import re
 from functools import lru_cache
+from numbers import Integral, Real
 import pandas as pd
 
+from .date_parse import normalize_data_date_value
+
 _INVALID_SHEET_CHARS = re.compile(r"[\\/?*\[\]:]")
+DATA_DATE_COL = "数据日期"
+DATA_DATE_NUMBER_FORMAT = "yyyy/m/d"
+
+
+def _coerce_data_date_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if DATA_DATE_COL not in df.columns:
+        return df
+    out = df.copy()
+    out[DATA_DATE_COL] = out[DATA_DATE_COL].map(lambda v: normalize_data_date_value(v) or v)
+    return out
+
+
+def _apply_data_date_format(writer: pd.ExcelWriter, sheet_name: str, df: pd.DataFrame) -> None:
+    if DATA_DATE_COL not in df.columns:
+        return
+    ws = writer.sheets.get(sheet_name)
+    if ws is None:
+        return
+    for col_idx, col_name in enumerate(df.columns, start=1):
+        if col_name != DATA_DATE_COL:
+            continue
+        for row_idx in range(2, ws.max_row + 1):
+            ws.cell(row_idx, col_idx).number_format = DATA_DATE_NUMBER_FORMAT
+
+
+def _to_text_key_df(df: pd.DataFrame) -> pd.DataFrame:
+    """稳定转文本键：空值统一，文本 trim，实际数值 1/1.0 等价。"""
+    def _norm(v) -> str:
+        if v is None:
+            return ""
+        try:
+            if pd.isna(v):
+                return ""
+        except (TypeError, ValueError):
+            pass
+        if isinstance(v, pd.Timestamp):
+            return v.strftime("%Y-%m-%d %H:%M:%S") if (v.hour or v.minute or v.second) else v.strftime("%Y-%m-%d")
+        if isinstance(v, datetime):
+            return v.strftime("%Y-%m-%d %H:%M:%S") if (v.hour or v.minute or v.second) else v.strftime("%Y-%m-%d")
+        if isinstance(v, date):
+            return v.strftime("%Y-%m-%d")
+        if isinstance(v, Integral) and not isinstance(v, bool):
+            return str(int(v))
+        if isinstance(v, Real) and not isinstance(v, bool):
+            fv = float(v)
+            return str(int(fv)) if fv.is_integer() else format(fv, ".15g")
+        return str(v).strip()
+
+    return df.apply(lambda col: col.map(_norm))
 
 
 def _excel_engine_for_path(path_text: str) -> str | None:
@@ -38,7 +91,9 @@ def write_workbook(out_path: Path, sheets: dict[str, pd.DataFrame]) -> Path:
         used: set[str] = set()
         for name, df in sheets.items():
             sn = safe_sheet_name(name, used)
-            df.to_excel(w, sheet_name=sn, index=False)
+            df_out = _coerce_data_date_columns(df)
+            df_out.to_excel(w, sheet_name=sn, index=False)
+            _apply_data_date_format(w, sn, df_out)
     return out_path
 
 
@@ -109,7 +164,7 @@ def append_to_target(target_wb: Path, target_sheet: str,
             "input_rows": 0, "batch_dedup_rows": 0, "existing_filtered_rows": 0,
             "written": 0, "skipped_reason": ""
         }
-    new_df = pd.DataFrame(rows, columns=header)
+    new_df = _coerce_data_date_columns(pd.DataFrame(rows, columns=header))
     input_rows = len(new_df)
     cols = [header[i] for i in dedup_key_idx if 0 <= i < len(header)] if dedup_key_idx else []
     seq_prefix_cols = [header[i] for i in (dedup_seq_prefix_idx or []) if 0 <= i < len(header)]
@@ -117,14 +172,15 @@ def append_to_target(target_wb: Path, target_sheet: str,
         # 先对本批新增数据去重。若启用行序号去重，口径改为“键列 + 组内序号”，
         # 避免仅按键列去重误删同组内本应保留的多行。
         if seq_prefix_cols and all(c in new_df.columns for c in seq_prefix_cols):
-            new_prefix = new_df[seq_prefix_cols].fillna("").astype(str)
+            new_prefix = _to_text_key_df(new_df[seq_prefix_cols])
             new_seq = new_prefix.groupby(seq_prefix_cols, dropna=False).cumcount()
-            new_key_df = new_df[cols].fillna("").astype(str).copy()
+            new_key_df = _to_text_key_df(new_df[cols]).copy()
             new_key_df["__seq"] = new_seq.values
             keep_mask = ~new_key_df.duplicated(keep="first")
             new_df = new_df[keep_mask]
         else:
-            new_df = new_df.drop_duplicates(subset=cols, keep="first")
+            keep_mask = ~_to_text_key_df(new_df[cols]).duplicated(keep="first")
+            new_df = new_df[keep_mask]
         batch_dedup_rows = len(new_df)
         if new_df.empty:
             return {
@@ -170,18 +226,18 @@ def append_to_target(target_wb: Path, target_sheet: str,
         if work_cols:
             # 行序号去重：按前缀列分组后，用组内序号作为附加键，减少全列键开销
             if seq_prefix_cols and all(c in old.columns for c in seq_prefix_cols) and all(c in new_df.columns for c in seq_prefix_cols):
-                old_prefix = old[seq_prefix_cols].fillna("").astype(str)
+                old_prefix = _to_text_key_df(old[seq_prefix_cols])
                 old_seq = old_prefix.groupby(seq_prefix_cols, dropna=False).cumcount()
-                old_key_df = old[work_cols].fillna("").astype(str).copy()
+                old_key_df = _to_text_key_df(old[work_cols]).copy()
                 old_key_df["__seq"] = old_seq.values
 
-                new_prefix = new_df[seq_prefix_cols].fillna("").astype(str)
+                new_prefix = _to_text_key_df(new_df[seq_prefix_cols])
                 new_seq = new_prefix.groupby(seq_prefix_cols, dropna=False).cumcount()
-                new_key_df = new_df[work_cols].fillna("").astype(str).copy()
+                new_key_df = _to_text_key_df(new_df[work_cols]).copy()
                 new_key_df["__seq"] = new_seq.values
             else:
-                old_key_df = old[work_cols].fillna("").astype(str)
-                new_key_df = new_df[work_cols].fillna("").astype(str)
+                old_key_df = _to_text_key_df(old[work_cols])
+                new_key_df = _to_text_key_df(new_df[work_cols])
 
             existing = set(tuple(x) for x in old_key_df.itertuples(index=False, name=None))
             keep_mask = []
@@ -208,9 +264,11 @@ def append_to_target(target_wb: Path, target_sheet: str,
         # 保留其它 sheet
         with pd.ExcelWriter(target_wb, engine="openpyxl", mode="a", if_sheet_exists="replace") as w:
             merged.to_excel(w, sheet_name=target_sheet, index=False)
+            _apply_data_date_format(w, target_sheet, merged)
     else:
         with pd.ExcelWriter(target_wb, engine="openpyxl") as w:
             merged.to_excel(w, sheet_name=target_sheet, index=False)
+            _apply_data_date_format(w, target_sheet, merged)
     return {
         "input_rows": input_rows,
         "batch_dedup_rows": batch_dedup_rows,

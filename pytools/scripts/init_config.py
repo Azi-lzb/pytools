@@ -31,7 +31,19 @@ def build_global_df() -> pd.DataFrame:
 
 
 def build_timeline_df() -> pd.DataFrame:
-    sample = ["否", "示例规则", "存款", "本外币", 1, "2", "", "", 3, "", 2, "", "合计;小计", "", "", "否"]
+    sample = {c: "" for c in TIMELINE_COLS}
+    sample.update({
+        "是否启用": "否",
+        "规则名称": "示例规则",
+        "工作簿关键字": "存款",
+        "工作表关键字": "本外币",
+        "行头列": 1,
+        "列表头行": "2",
+        "数据起始行": 3,
+        "数据起始列": 2,
+        "跳过关键字": "合计;小计",
+        "启用目标写入": "否",
+    })
     return pd.DataFrame([sample], columns=TIMELINE_COLS)
 
 

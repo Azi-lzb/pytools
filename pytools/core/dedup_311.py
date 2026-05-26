@@ -28,6 +28,42 @@ class DedupTask:
     task_name: str = ""
 
 
+def _dedup_tasks_check_delete(tasks: list[DedupTask]) -> tuple[list[DedupTask], int]:
+    """2-3/2-4 任务预合并：同 source_wb+source_ws+key_cols 仅执行一次。"""
+    seen: set[tuple[str, str, tuple[int, ...]]] = set()
+    out: list[DedupTask] = []
+    merged = 0
+    for t in tasks:
+        if not t.enabled:
+            continue
+        sig = (str(t.source_wb), t.source_ws, tuple(t.key_cols or []))
+        if sig in seen:
+            merged += 1
+            continue
+        seen.add(sig)
+        out.append(t)
+    return out, merged
+
+
+def _dedup_tasks_append(tasks: list[DedupTask]) -> tuple[list[DedupTask], int]:
+    """2-5 任务预合并：同 source+target+key_cols 仅执行一次。"""
+    seen: set[tuple[str, str, str, str, tuple[int, ...]]] = set()
+    out: list[DedupTask] = []
+    merged = 0
+    for t in tasks:
+        if not t.enabled:
+            continue
+        tgt_wb = str(t.target_wb) if t.target_wb is not None else ""
+        tgt_ws = str(t.target_ws) if t.target_ws is not None else ""
+        sig = (str(t.source_wb), t.source_ws, tgt_wb, tgt_ws, tuple(t.key_cols or []))
+        if sig in seen:
+            merged += 1
+            continue
+        seen.add(sig)
+        out.append(t)
+    return out, merged
+
+
 def _norm(v) -> str:
     if v is None:
         return ""
@@ -162,10 +198,12 @@ def run_delete_by_comment(workbook_path: Path, log_dir: Path) -> dict:
 def run_check_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
     log = get_logger("3_11_3_check_by_config", log_dir)
     t0_all = perf_counter()
+    tasks_eff, merged_dup = _dedup_tasks_check_delete(tasks)
+    if merged_dup > 0:
+        log.info("预合并重复配置: merged=%s", merged_dup)
     groups = defaultdict(list)
-    for t in tasks:
-        if t.enabled:
-            groups[str(t.source_wb)].append(t)
+    for t in tasks_eff:
+        groups[str(t.source_wb)].append(t)
 
     task_ok = task_skip = marked_total = 0
     for wb_path_text, wb_tasks in groups.items():
@@ -204,10 +242,12 @@ def run_check_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
 def run_delete_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
     log = get_logger("3_11_4_delete_by_config", log_dir)
     t0_all = perf_counter()
+    tasks_eff, merged_dup = _dedup_tasks_check_delete(tasks)
+    if merged_dup > 0:
+        log.info("预合并重复配置: merged=%s", merged_dup)
     groups = defaultdict(list)
-    for t in tasks:
-        if t.enabled:
-            groups[str(t.source_wb)].append(t)
+    for t in tasks_eff:
+        groups[str(t.source_wb)].append(t)
 
     task_ok = task_skip = deleted_total = 0
     for wb_path_text, wb_tasks in groups.items():
@@ -307,15 +347,16 @@ def _append_unique_source_to_target(
 def run_append_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
     log = get_logger("3_11_5_append_by_config", log_dir)
     t0_all = perf_counter()
+    tasks_eff, merged_dup = _dedup_tasks_append(tasks)
+    if merged_dup > 0:
+        log.info("预合并重复配置: merged=%s", merged_dup)
     task_ok = task_skip = appended_total = deleted_total = 0
     src_wb_cache: dict[str, object] = {}
     tgt_wb_cache: dict[str, object] = {}
     tgt_changed: set[str] = set()
     tgt_key_cache: dict[tuple[str, str, tuple[int, ...]], set[tuple[str, ...]]] = {}
 
-    for t in tasks:
-        if not t.enabled:
-            continue
+    for t in tasks_eff:
         t0_task = perf_counter()
         if not t.source_wb.exists() or not _workbook_is_supported(t.source_wb):
             task_skip += 1
