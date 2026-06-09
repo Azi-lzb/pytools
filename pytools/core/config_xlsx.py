@@ -13,6 +13,7 @@ SHEET_PRINT_CONFIG = "打印配置"
 SHEET_CONFIG_RENAME = "重命名配置"
 SHEET_INSTITUTION_MAPPING = "机构映射表"
 SHEET_EXTRACT_CONFIG = "工作表提取"
+SHEET_ARCHIVE_TYPE_CONFIG = "归档类型配置"
 
 REQUIRED_GLOBAL_KEYS = ["输入目录", "输出目录", "日志目录"]
 TIMELINE_COLS = [
@@ -48,6 +49,9 @@ PRINT_CONFIG_COLS = [
 CONFIG_RENAME_COLS = [
     "简称", "全称", "占位C", "代码", "全称(代码映射)", "占位F", "键", "值", "占位I",
     "原表名", "新表名", "根据文件内容重命名", "原文件名片段", "新文件名片段",
+]
+ARCHIVE_TYPE_CONFIG_COLS = [
+    "是否启用", "匹配关键词", "归档文件夹", "备注", "需要归档的后缀", "排除归档的后缀",
 ]
 INSTITUTION_MAPPING_COLS = [
     "原始机构名称", "映射后机构名称", "是否为外资行",
@@ -86,6 +90,9 @@ FEATURE_REQUIRED = {
     "t8": [SHEET_CONFIG_RENAME],
     "t9": [SHEET_CONFIG_RENAME],
     "t10": [SHEET_CONFIG_RENAME],
+    "ar_date": [],
+    "ar_type": [SHEET_ARCHIVE_TYPE_CONFIG],
+    "ar_type_copy": [SHEET_ARCHIVE_TYPE_CONFIG],
     "s21": [SHEET_GLOBAL],
     "s22": [SHEET_GLOBAL],
     "s21com": [SHEET_GLOBAL],
@@ -105,8 +112,19 @@ SHEET_COL_REQUIRED = {
     SHEET_PATH_MAP: PATH_MAP_COLS,
     SHEET_PRINT_CONFIG: PRINT_CONFIG_COLS,
     SHEET_CONFIG_RENAME: CONFIG_RENAME_COLS,
+    SHEET_ARCHIVE_TYPE_CONFIG: ARCHIVE_TYPE_CONFIG_COLS,
     SHEET_INSTITUTION_MAPPING: INSTITUTION_MAPPING_COLS,
     SHEET_EXTRACT_CONFIG: EXTRACT_CONFIG_COLS,
+}
+FEATURE_SHEET_COL_REQUIRED = {
+    ("t3", SHEET_CONFIG_RENAME): ["简称", "全称", "代码", "全称(代码映射)", "键", "值"],
+    ("t7", SHEET_CONFIG_RENAME): ["原表名", "新表名"],
+    ("t7com", SHEET_CONFIG_RENAME): ["原表名", "新表名"],
+    ("t8", SHEET_CONFIG_RENAME): [],
+    ("t9", SHEET_CONFIG_RENAME): [],
+    ("t10", SHEET_CONFIG_RENAME): ["原文件名片段", "新文件名片段"],
+    ("ar_type", SHEET_ARCHIVE_TYPE_CONFIG): ["是否启用", "匹配关键词", "归档文件夹", "备注"],
+    ("ar_type_copy", SHEET_ARCHIVE_TYPE_CONFIG): ["是否启用", "匹配关键词", "归档文件夹", "备注"],
 }
 
 
@@ -258,7 +276,8 @@ def validate_sheets_for_feature(feature: str, cfg_path: Path) -> list[str]:
         else:
             df = pd.read_excel(xls, sh, header=0, dtype=object, nrows=0)
             cols = list(df.columns)
-            for c in SHEET_COL_REQUIRED[sh]:
+            required_cols = FEATURE_SHEET_COL_REQUIRED.get((feature, sh), SHEET_COL_REQUIRED[sh])
+            for c in required_cols:
                 if c not in cols:
                     errors.append(f"{sh} 缺少列: {c}")
     return errors

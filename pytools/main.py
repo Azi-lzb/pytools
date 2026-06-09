@@ -58,6 +58,11 @@ from pytools.core.convert_33_34_35_37 import (
     run_batch_rename_by_content_46,
     run_batch_unrename_by_content_47,
     run_batch_rename_local_map_48,
+    run_archive_by_date_preview,
+    run_archive_by_type_preview,
+    run_archive_plan_copy,
+    run_archive_by_date_copy,
+    run_archive_by_type_copy,
 )
 from pytools.core.feature_1_1_split_village_bank import run_split_village_bank
 from pytools.core.feature_1_2_normalize_institution import run_normalize_institution
@@ -92,10 +97,21 @@ MAIN_MENU = """
   5  配置工具
   6  汇总工具
   7  一二批处理工具
-  8  调研选项统计
+  8  归档工具
   9  快捷工具
   0  退出
 ==============================
+"""
+
+ARCHIVE_MENU = """
+------ 归档工具 ------
+  1  按日期归档（预览）
+  2  按类型归档（预览，归档类型配置）
+  3  执行归档计划（复制）
+  4  按日期归档（直接复制）
+  5  按类型归档（直接复制，归档类型配置）
+  0  返回
+----------------------
 """
 
 PENDING_MENU = """
@@ -113,15 +129,11 @@ PENDING_MENU = """
 
 TIMELINE_MENU = """
 ------ 时序工具 ------
-  1  表头路径比对（混合）
-  2  时序提取（快速精简）
-  3  宽表汇总（行头加后缀）
-  4  宽表汇总（行头不加后缀）
+  1  表头路径比对（自动路由）
+  2  时序提取（自动路由）
+  3  宽表汇总（行头加后缀，自动路由）
+  4  宽表汇总（行头不加后缀，自动路由）
   5  预校验
-  6  [自动路由COM] 表头路径比对（混合）
-  7  [自动路由COM] 时序提取（快速精简）
-  8  [自动路由COM] 宽表汇总（行头加后缀）
-  9  [自动路由COM] 宽表汇总（行头不加后缀）
   0  返回
 ----------------------
 """
@@ -151,21 +163,18 @@ CONVERT_MENU = """
   1  批量重命名文件
   2  [COM] 批量Excel格式转换
   3  [COM] 批量Word格式转换
-  4  批量修改Sheet名
-  5  [自动路由COM] 批量修改Sheet名
-  6  根据文件内容重命名（重命名配置！L2）
-  7  取消根据内容重命名前缀（重命名配置！L2）
-  8  批量局部映射重命名文件（重命名配置！M:N）
+  4  [自动路由COM] 批量修改Sheet名
+  5  根据文件内容重命名（重命名配置！L2）
+  6  取消根据内容重命名前缀（重命名配置！L2）
+  7  批量局部映射重命名文件（重命名配置！M:N）
   0  返回
 ----------------------
 """
 
 SUMMARY_MENU = """
 ------ 汇总工具 ------
-  1  按使用区域汇总（全量）
-  2  按批注汇总（模板+源文件）
-  3  [自动路由COM] 按使用区域汇总（全量）
-  4  [自动路由COM] 按批注汇总（模板+源文件）
+  1  按使用区域汇总（全量，自动路由）
+  2  按批注汇总（模板+源文件，自动路由）
   0  返回
 ----------------------
 """
@@ -187,14 +196,11 @@ QUICK_MENU = """
 
 PRINT_MENU = """
 ------ 打印工具 ------
-  1  按批注打印（保留源格式）
-  2  按批注打印（快速复制）
-  3  按配置打印（执行全部模式）
+  1  按批注打印（保留源格式，自动路由）
+  2  按批注打印（快速复制，自动路由）
+  3  按配置打印（执行全部模式，自动路由）
   4  按配置打印预校验
-  5  [自动路由COM] 按批注打印（保留源格式）
-  6  [自动路由COM] 按批注打印（快速复制）
-  7  [自动路由COM] 按配置打印（执行全部模式）
-  8  [自动路由COM] 按配置打印 → 导出 PDF（打印预览）
+  5  按配置打印 → 导出 PDF（打印预览，自动路由COM）
   0  返回
 ----------------------
 """
@@ -267,6 +273,60 @@ def _pick_source_files(
         if pp.exists():
             out.append(pp)
     return out
+
+
+def _pick_archive_paths(title: str) -> list[Path]:
+    print(f"→ {title}")
+    print("  1  选择文件（可多选）")
+    print("  2  选择文件夹（递归遍历）")
+    print("  0  取消")
+    mode = input("选择方式> ").strip()
+    if mode == "0":
+        return []
+
+    if mode == "1":
+        return _pick_source_files(title, filetypes=[("所有文件", "*.*")])
+
+    if mode == "2":
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            root.lift()
+            root.update()
+            p = filedialog.askdirectory(title=title)
+            root.destroy()
+            return [Path(p)] if p else []
+        except Exception as e:
+            print(f"[提示] 文件夹弹窗不可用：{e}")
+
+    print("[提示] 已取消选择。")
+    return []
+
+
+def _pick_archive_target_root() -> Path | None:
+    print("→ 请选择归档目标根目录")
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.lift()
+        root.update()
+        p = filedialog.askdirectory(title="选择归档目标根目录")
+        root.destroy()
+        if p:
+            return Path(p)
+    except Exception as e:
+        print(f"[提示] 目录弹窗不可用：{e}")
+
+    raw = input("目标根目录路径（输入 0 取消）> ").strip()
+    if raw in ("", "0"):
+        return None
+    return Path(raw.strip('"').strip("'"))
 
 
 def _split_sources_for_auto_route(paths: list[Path]) -> tuple[list[Path], list[Path]]:
@@ -881,6 +941,75 @@ def dispatch(choice: str) -> None:
             return
         stat = run_batch_rename_local_map_48(CFG_PATH, srcs, g.log_dir)
         print(f"[完成] 映射规则={stat.get('rules', 0)} 成功={stat['ok']} 跳过={stat['skip']}")
+    elif choice == "ar_date":
+        paths = _pick_archive_paths("选择要按日期归档预览的文件或文件夹")
+        if not paths:
+            print("[已取消]")
+            return
+        target_root = _pick_archive_target_root()
+        if target_root is None:
+            print("[已取消]")
+            return
+        stat = run_archive_by_date_preview(paths, target_root, g.output_dir, g.log_dir, CFG_PATH)
+        print(
+            f"[完成] 归档计划={stat['output']} 文件={stat['files']} "
+            f"后缀跳过={stat.get('skipped_ext', 0)} 无效路径={stat['invalid']} 目标根目录={stat['target_root']}"
+        )
+    elif choice == "ar_type":
+        paths = _pick_archive_paths("选择要按类型归档预览的文件或文件夹")
+        if not paths:
+            print("[已取消]")
+            return
+        target_root = _pick_archive_target_root()
+        if target_root is None:
+            print("[已取消]")
+            return
+        stat = run_archive_by_type_preview(CFG_PATH, paths, target_root, g.output_dir, g.log_dir)
+        print(
+            f"[完成] 归档计划={stat['output']} 文件={stat['files']} "
+            f"规则={stat['rules']} 后缀跳过={stat.get('skipped_ext', 0)} "
+            f"无效路径={stat['invalid']} 目标根目录={stat['target_root']}"
+        )
+    elif choice == "ar_exec":
+        plan = _pick_one_workbook("选择归档计划 Excel 文件")
+        if plan is None:
+            print("[已取消]")
+            return
+        stat = run_archive_plan_copy(plan, g.output_dir, g.log_dir)
+        print(
+            f"[完成] 执行结果={stat['output']} 已复制={stat['copied']} "
+            f"跳过={stat['skip']} 失败={stat['failed']}"
+        )
+    elif choice == "ar_date_copy":
+        paths = _pick_archive_paths("选择要按日期直接复制归档的文件或文件夹")
+        if not paths:
+            print("[已取消]")
+            return
+        target_root = _pick_archive_target_root()
+        if target_root is None:
+            print("[已取消]")
+            return
+        stat = run_archive_by_date_copy(paths, target_root, g.output_dir, g.log_dir, CFG_PATH)
+        print(
+            f"[完成] 执行结果={stat['output']} 已复制={stat['copied']} "
+            f"跳过={stat['skip']} 后缀跳过={stat.get('skipped_ext', 0)} "
+            f"失败={stat['failed']} 目标根目录={stat['target_root']}"
+        )
+    elif choice == "ar_type_copy":
+        paths = _pick_archive_paths("选择要按类型直接复制归档的文件或文件夹")
+        if not paths:
+            print("[已取消]")
+            return
+        target_root = _pick_archive_target_root()
+        if target_root is None:
+            print("[已取消]")
+            return
+        stat = run_archive_by_type_copy(CFG_PATH, paths, target_root, g.output_dir, g.log_dir)
+        print(
+            f"[完成] 执行结果={stat['output']} 已复制={stat['copied']} "
+            f"规则={stat['rules']} 跳过={stat['skip']} 后缀跳过={stat.get('skipped_ext', 0)} "
+            f"失败={stat['failed']} 目标根目录={stat['target_root']}"
+        )
     elif choice == "s21":
         srcs = _pick_source_files("选择按使用区域汇总的源文件（可多选）")
         if not srcs:
@@ -1225,31 +1354,30 @@ def main() -> None:
             return
 
         if main_choice == "1":
-            sub = _show_sub_menu(TIMELINE_MENU, ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"))
+            sub = _show_sub_menu(TIMELINE_MENU, ("1", "2", "3", "4", "5", "0"))
             if sub == "0":
                 continue
-            # 新菜单 -> 旧分发代号
-            mapped = {"1": "1", "2": "2", "3": "3", "4": "4", "5": "5",
-                      "6": "1com", "7": "2com", "8": "3com", "9": "4com"}[sub]
+            mapped = {"1": "1com", "2": "2com", "3": "3com", "4": "4com", "5": "5"}[sub]
         elif main_choice == "2":
             sub = _show_sub_menu(DEDUP_MENU, ("1", "2", "3", "4", "5", "6", "0"))
             if sub == "0":
                 continue
             mapped = {"1": "6", "2": "7", "3": "8", "4": "9", "5": "a", "6": "b"}[sub]
         elif main_choice == "3":
-            sub = _show_sub_menu(PRINT_MENU, ("1", "2", "3", "4", "5", "6", "7", "8", "0"))
-            if sub == "0":
-                continue
-            mapped = {"1": "p1", "2": "p3", "3": "p7", "4": "p8",
-                      "5": "p1com", "6": "p3com", "7": "p7com",
-                      "8": "ppdf"}[sub]
-        elif main_choice == "4":
-            sub = _show_sub_menu(CONVERT_MENU, ("1", "2", "3", "4", "5", "6", "7", "8", "0"))
+            sub = _show_sub_menu(PRINT_MENU, ("1", "2", "3", "4", "5", "0"))
             if sub == "0":
                 continue
             mapped = {
-                "1": "t3", "2": "t4", "3": "t5", "4": "t7",
-                "5": "t7com", "6": "t8", "7": "t9", "8": "t10",
+                "1": "p1com", "2": "p3com", "3": "p7com",
+                "4": "p8", "5": "ppdf",
+            }[sub]
+        elif main_choice == "4":
+            sub = _show_sub_menu(CONVERT_MENU, ("1", "2", "3", "4", "5", "6", "7", "0"))
+            if sub == "0":
+                continue
+            mapped = {
+                "1": "t3", "2": "t4", "3": "t5", "4": "t7com",
+                "5": "t8", "6": "t9", "7": "t10",
             }[sub]
         elif main_choice == "5":
             sub = _show_sub_menu(CONFIG_MENU, ("1", "2", "0"))
@@ -1257,10 +1385,10 @@ def main() -> None:
                 continue
             mapped = {"1": "c", "2": "cv"}[sub]
         elif main_choice == "6":
-            sub = _show_sub_menu(SUMMARY_MENU, ("1", "2", "3", "4", "0"))
+            sub = _show_sub_menu(SUMMARY_MENU, ("1", "2", "0"))
             if sub == "0":
                 continue
-            mapped = {"1": "s21", "2": "s22", "3": "s21com", "4": "s22com"}[sub]
+            mapped = {"1": "s21com", "2": "s22com"}[sub]
         elif main_choice == "7":
             sub = _show_sub_menu(PENDING_MENU, ("1", "2", "3", "4", "5", "6", "7", "0"))
             if sub == "0":
@@ -1268,10 +1396,13 @@ def main() -> None:
             mapped = {"1": "x11", "2": "x12", "3": "x13", "4": "x14com",
                       "5": "x15", "6": "x16com", "7": "x18"}[sub]
         elif main_choice == "8":
-            sub = _show_sub_menu(SURVEY_MENU, ("1", "0"))
+            sub = _show_sub_menu(ARCHIVE_MENU, ("1", "2", "3", "4", "5", "0"))
             if sub == "0":
                 continue
-            mapped = {"1": "sv1"}[sub]
+            mapped = {
+                "1": "ar_date", "2": "ar_type", "3": "ar_exec",
+                "4": "ar_date_copy", "5": "ar_type_copy",
+            }[sub]
         else:
             sub = _show_sub_menu(QUICK_MENU, ("1", "2", "0"))
             if sub == "0":

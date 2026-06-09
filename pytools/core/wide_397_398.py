@@ -10,6 +10,7 @@ from .rule_engine import (
     _kw_match,
     pick_rules_for_workbook,
     compute_wide_col_paths_from_arrays,
+    parse_col_spec,
 )
 from .io_excel import (
     list_source_files, list_sheet_names, write_workbook, append_to_target, clear_sheet_cache, read_sheet_2d
@@ -66,7 +67,18 @@ def _resolve_target_dedup_idx(
     """宽表目标写入去重键：显式配置优先，否则按业务默认键推导。"""
     explicit_cols = list(getattr(rule, "target_dedup_cols", []) or [])
     if explicit_cols:
-        missing = [c for c in explicit_cols if c not in header]
+        key_idx: list[int] = []
+        missing: list[str] = []
+        for c in explicit_cols:
+            if c in header:
+                idx = header.index(c)
+            else:
+                col_no = parse_col_spec(c)
+                idx = col_no - 1 if 1 <= col_no <= len(header) else -1
+            if idx < 0:
+                missing.append(c)
+            elif idx not in key_idx:
+                key_idx.append(idx)
         if missing:
             log.warning(
                 "规则[%s] 目标去重列不存在，已跳过目标写入: %s",
@@ -74,7 +86,7 @@ def _resolve_target_dedup_idx(
                 ";".join(missing),
             )
             return None
-        key_cols = explicit_cols
+        return key_idx
     else:
         key_cols = ["数据日期"]
         key_cols.extend(h for h in set_headers if h in header)

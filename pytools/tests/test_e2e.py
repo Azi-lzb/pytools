@@ -13,7 +13,7 @@ from pytools.core.config_xlsx import (
 )
 from pytools.core.precheck_399 import run_precheck
 from pytools.core.timeline_396 import run_timeline_slim
-from pytools.core.wide_397_398 import run_wide_summary
+from pytools.core.wide_397_398 import run_wide_summary, _resolve_target_dedup_idx
 from pytools.core.compare_393 import run_compare
 
 
@@ -135,6 +135,18 @@ def test_timeline_target_dedup_cols_parse(env):
 
     rule = load_timeline_rules(cfg)[0]
     assert rule.target_dedup_cols == ["数据日期", "机构代码", "行头路径"]
+
+
+def test_timeline_target_dedup_cols_accept_col_letters(env):
+    cfg, *_ = env
+    df = pd.read_excel(cfg, sheet_name=SHEET_TIMELINE_RULE, dtype=object)
+    df.loc[0, "目标去重列"] = "数据日期;D"
+    with pd.ExcelWriter(cfg, engine="openpyxl", mode="a", if_sheet_exists="replace") as w:
+        df.to_excel(w, sheet_name=SHEET_TIMELINE_RULE, index=False)
+
+    rule = load_timeline_rules(cfg)[0]
+    header = ["数据日期", "机构代码", "行头路径", "本月余额"]
+    assert _resolve_target_dedup_idx(rule, header, ["机构代码"], None) == [0, 3]
 
 
 def test_2_timeline_slim(env):

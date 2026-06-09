@@ -4,12 +4,15 @@ from pathlib import Path
 import os
 import re
 import gc
+import shutil
+from datetime import datetime
 
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils.cell import coordinate_from_string
 
-from .config_xlsx import SHEET_CONFIG_RENAME
+from .config_xlsx import SHEET_ARCHIVE_TYPE_CONFIG, SHEET_CONFIG_RENAME
+from .io_excel import write_workbook
 from .logger import get_logger
 
 
@@ -22,6 +25,10 @@ def _norm(v) -> str:
 def _split_tokens(v: str) -> list[str]:
     s = _norm(v).replace("；", ";").replace(",", ";")
     return [x.strip() for x in s.split(";") if x.strip()]
+
+
+def _is_enabled(v) -> bool:
+    return _norm(v).lower() in ("1", "y", "yes", "true", "是", "启用")
 
 
 def _workbook_supported(path: Path) -> bool:
@@ -67,6 +74,488 @@ def _next_path(p: Path) -> Path:
         if not cand.exists():
             return cand
         i += 1
+
+
+def _next_plan_path(p: Path, planned: set[Path]) -> Path:
+    cand = p
+    i = 1
+    while cand.exists() or cand in planned:
+        cand = p.with_name(f"{p.stem}_{i}{p.suffix}")
+        i += 1
+    planned.add(cand)
+    return cand
+
+
+def _safe_folder_name(text: str) -> str:
+    s = _sanitize_name_part(text)
+    return s or "未识别"
+
+
+def _iter_archive_candidates(paths: list[Path]) -> tuple[list[Path], list[Path]]:
+    files: list[Path] = []
+    invalid: list[Path] = []
+    seen: set[Path] = set()
+    for p in paths:
+        if p.is_dir():
+            for child in sorted(p.rglob("*")):
+                if child.is_file() and not child.name.startswith("~$"):
+                    key = child.resolve()
+                    if key not in seen:
+                        files.append(child)
+                        seen.add(key)
+        elif p.is_file():
+            key = p.resolve()
+            if key not in seen and not p.name.startswith("~$"):
+                files.append(p)
+                seen.add(key)
+        else:
+            invalid.append(p)
+    return files, invalid
+
+
+def _parse_archive_exts(raw) -> set[str]:
+    text = _norm(raw)
+    if not text:
+        return set()
+    parts = re.split(r"[;；,，\s]+", text)
+    out: set[str] = set()
+    for part in parts:
+        ext = part.strip().lower()
+        if not ext:
+            continue
+        ext = ext.lstrip(".")
+        if ext:
+            out.add(f".{ext}")
+    return out
+
+
+def _load_archive_ext_filter(cfg_path: Path | None) -> tuple[set[str], set[str], str]:
+    if cfg_path is None or not cfg_path.exists():
+        return set(), set(), "未配置后缀筛选，按全部文件处理"
+    try:
+        wb = load_workbook(cfg_path, read_only=True, data_only=True)
+        try:
+            if SHEET_ARCHIVE_TYPE_CONFIG not in wb.sheetnames:
+                return set(), set(), "未配置后缀筛选，按全部文件处理"
+            ws = wb[SHEET_ARCHIVE_TYPE_CONFIG]
+            include = _parse_archive_exts(ws["E2"].value)
+            exclude = _parse_archive_exts(ws["F2"].value)
+            return include, exclude, ""
+        finally:
+            wb.close()
+    except Exception:
+        return set(), set(), "未配置后缀筛选，按全部文件处理"
+
+
+def _archive_ext_skip_status(path: Path, include_exts: set[str], exclude_exts: set[str]) -> str:
+    ext = path.suffix.lower()
+    if ext in exclude_exts:
+        return "跳过：后缀被排除"
+    if include_exts and ext not in include_exts:
+        return "跳过：后缀不在归档范围"
+    return ""
+
+
+def _archive_date_from_name(name: str) -> str:
+    text = Path(name).stem
+
+    patterns = [
+        r"(?<!\d)(20\d{2})[-_.年](0?[1-9]|1[0-2])[-_.月](0?[1-9]|[12]\d|3[01])日?(?!\d)",
+        r"(?<!\d)(20\d{2})(0[1-9]|1[0-2])([0-2]\d|3[01])(?!\d)",
+        r"(?<!\d)(20\d{2})[-_.年](0?[1-9]|1[0-2])月?(?!\d)",
+        r"(?<!\d)(20\d{2})(0[1-9]|1[0-2])(?!\d)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text)
+        if not m:
+            continue
+        y = m.group(1)
+        mo = int(m.group(2))
+        if len(m.groups()) >= 3 and m.group(3) is not None:
+            day = int(m.group(3))
+            if 1 <= mo <= 12 and 1 <= day <= 31:
+                return f"{y}{mo:02d}"
+        elif 1 <= mo <= 12:
+            return f"{y}{mo:02d}"
+    return ""
+
+
+def _load_archive_type_rules(cfg_path: Path) -> list[tuple[str, str]]:
+    df = pd.read_excel(cfg_path, SHEET_ARCHIVE_TYPE_CONFIG, header=0, dtype=object)
+    rules: list[tuple[str, str]] = []
+    for _, row in df.iterrows():
+        if not _is_enabled(row.get("是否启用")):
+            continue
+        keyword = _norm(row.get("匹配关键词"))
+        folder = _safe_folder_name(row.get("归档文件夹"))
+        if keyword:
+            rules.append((keyword, folder))
+    return rules
+
+
+def _archive_type_from_name(name: str, rules: list[tuple[str, str]]) -> str:
+    lower_name = name.lower()
+    for keyword, folder in rules:
+        if keyword.lower() in lower_name:
+            return folder
+    return ""
+
+
+def _build_archive_preview(
+    paths: list[Path],
+    target_root: Path,
+    mode: str,
+    output_dir: Path,
+    log_dir: Path,
+    cfg_path: Path | None = None,
+) -> dict[str, object]:
+    log = get_logger(f"archive_{mode}", log_dir)
+    target_root = target_root.resolve()
+    files, invalid = _iter_archive_candidates(paths)
+    rules = _load_archive_type_rules(cfg_path) if mode == "type" and cfg_path is not None else []
+    include_exts, exclude_exts, filter_note = _load_archive_ext_filter(cfg_path)
+    rows: list[dict[str, str]] = []
+    planned: set[Path] = set()
+    skipped_ext = 0
+
+    for p in invalid:
+        rows.append({
+            "源文件路径": str(p),
+            "文件名": p.name,
+            "分类方式": "按日期" if mode == "date" else "按类型",
+            "分类结果": "",
+            "目标文件夹": "",
+            "目标文件路径": "",
+            "状态": "跳过：非文件",
+            "备注": "",
+        })
+
+    for p in files:
+        skip_status = _archive_ext_skip_status(p, include_exts, exclude_exts)
+        if skip_status:
+            skipped_ext += 1
+            rows.append({
+                "源文件路径": str(p),
+                "文件名": p.name,
+                "分类方式": "按日期" if mode == "date" else "按类型",
+                "分类结果": "",
+                "目标文件夹": "",
+                "目标文件路径": "",
+                "状态": skip_status,
+                "备注": "",
+            })
+            continue
+
+        if mode == "date":
+            folder = _archive_date_from_name(p.name)
+            status = "待归档" if folder else "未识别日期"
+            folder = folder or "未识别日期"
+        else:
+            folder = _archive_type_from_name(p.name, rules)
+            status = "待归档" if folder else "未识别类型"
+            folder = folder or "未识别类型"
+
+        folder = _safe_folder_name(folder)
+        target_dir = target_root / folder
+        raw_target = target_dir / p.name
+        target = _next_plan_path(raw_target, planned)
+        note = "目标同名：将自动后缀" if target.name != p.name else ""
+        rows.append({
+            "源文件路径": str(p),
+            "文件名": p.name,
+            "分类方式": "按日期" if mode == "date" else "按类型",
+            "分类结果": folder,
+            "目标文件夹": str(target_dir),
+            "目标文件路径": str(target),
+            "状态": status,
+            "备注": note,
+        })
+
+    df = pd.DataFrame(rows, columns=[
+        "源文件路径", "文件名", "分类方式", "分类结果",
+        "目标文件夹", "目标文件路径", "状态", "备注",
+    ])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_归档计划.xlsx"
+    write_workbook(out_path, {"归档计划": df})
+    log.info(
+        "archive preview mode=%s inputs=%s files=%s skipped_ext=%s include_exts=%s exclude_exts=%s output=%s",
+        mode, len(paths), len(files), skipped_ext, sorted(include_exts), sorted(exclude_exts), out_path,
+    )
+    return {
+        "files": len(files),
+        "invalid": len(invalid),
+        "planned": len(rows),
+        "rules": len(rules),
+        "skipped_ext": skipped_ext,
+        "include_exts": sorted(include_exts),
+        "exclude_exts": sorted(exclude_exts),
+        "filter_note": filter_note,
+        "target_root": str(target_root),
+        "output": out_path,
+    }
+
+
+def _copy_archive_rows(rows: list[dict[str, str]], output_dir: Path, log_dir: Path) -> dict[str, object]:
+    log = get_logger("archive_copy", log_dir)
+    result_rows: list[dict[str, str]] = []
+    copied = skip = failed = 0
+    executable = {"待归档", "未识别日期", "未识别类型"}
+    planned: set[Path] = set()
+
+    for row in rows:
+        src = Path(_norm(row.get("源文件路径")))
+        target_raw = _norm(row.get("目标文件路径"))
+        plan_status = _norm(row.get("状态"))
+        result_status = ""
+        actual_target = ""
+        note = ""
+
+        if plan_status not in executable:
+            skip += 1
+            result_status = "跳过：计划状态不可执行"
+            note = plan_status
+        elif not target_raw:
+            skip += 1
+            result_status = "跳过：目标路径为空"
+        elif not src.exists() or not src.is_file():
+            skip += 1
+            result_status = "跳过：源文件不存在"
+        else:
+            try:
+                target = _next_plan_path(Path(target_raw), planned)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, target)
+                copied += 1
+                actual_target = str(target)
+                result_status = "已复制"
+                if str(target) != target_raw:
+                    note = "目标同名：已自动后缀"
+                log.info("copied src=%s target=%s", src, target)
+            except Exception as e:
+                failed += 1
+                result_status = f"失败：{e}"
+                log.warning("copy failed src=%s target=%s err=%s", src, target_raw, e)
+
+        result_rows.append({
+            "源文件路径": str(src),
+            "原计划目标路径": target_raw,
+            "实际目标路径": actual_target,
+            "执行状态": result_status,
+            "备注": note,
+        })
+
+    out_df = pd.DataFrame(result_rows, columns=["源文件路径", "原计划目标路径", "实际目标路径", "执行状态", "备注"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_归档执行结果.xlsx"
+    write_workbook(out_path, {"归档执行结果": out_df})
+    return {
+        "rows": len(result_rows),
+        "copied": copied,
+        "skip": skip,
+        "failed": failed,
+        "output": out_path,
+    }
+
+
+def _build_archive_rows(
+    paths: list[Path],
+    target_root: Path,
+    mode: str,
+    log_dir: Path,
+    cfg_path: Path | None = None,
+) -> tuple[list[dict[str, str]], dict[str, object]]:
+    log = get_logger(f"archive_{mode}", log_dir)
+    target_root = target_root.resolve()
+    files, invalid = _iter_archive_candidates(paths)
+    rules = _load_archive_type_rules(cfg_path) if mode == "type" and cfg_path is not None else []
+    include_exts, exclude_exts, filter_note = _load_archive_ext_filter(cfg_path)
+    rows: list[dict[str, str]] = []
+    planned: set[Path] = set()
+    skipped_ext = 0
+
+    for p in invalid:
+        rows.append({
+            "源文件路径": str(p),
+            "文件名": p.name,
+            "分类方式": "按日期" if mode == "date" else "按类型",
+            "分类结果": "",
+            "目标文件夹": "",
+            "目标文件路径": "",
+            "状态": "跳过：非文件",
+            "备注": "",
+        })
+
+    for p in files:
+        skip_status = _archive_ext_skip_status(p, include_exts, exclude_exts)
+        if skip_status:
+            skipped_ext += 1
+            rows.append({
+                "源文件路径": str(p),
+                "文件名": p.name,
+                "分类方式": "按日期" if mode == "date" else "按类型",
+                "分类结果": "",
+                "目标文件夹": "",
+                "目标文件路径": "",
+                "状态": skip_status,
+                "备注": "",
+            })
+            continue
+
+        if mode == "date":
+            folder = _archive_date_from_name(p.name)
+            status = "待归档" if folder else "未识别日期"
+            folder = folder or "未识别日期"
+        else:
+            folder = _archive_type_from_name(p.name, rules)
+            status = "待归档" if folder else "未识别类型"
+            folder = folder or "未识别类型"
+
+        folder = _safe_folder_name(folder)
+        target_dir = target_root / folder
+        raw_target = target_dir / p.name
+        target = _next_plan_path(raw_target, planned)
+        note = "目标同名：将自动后缀" if target.name != p.name else ""
+        rows.append({
+            "源文件路径": str(p),
+            "文件名": p.name,
+            "分类方式": "按日期" if mode == "date" else "按类型",
+            "分类结果": folder,
+            "目标文件夹": str(target_dir),
+            "目标文件路径": str(target),
+            "状态": status,
+            "备注": note,
+        })
+
+    log.info(
+        "archive rows mode=%s inputs=%s files=%s skipped_ext=%s include_exts=%s exclude_exts=%s",
+        mode, len(paths), len(files), skipped_ext, sorted(include_exts), sorted(exclude_exts),
+    )
+    return rows, {
+        "files": len(files),
+        "invalid": len(invalid),
+        "planned": len(rows),
+        "rules": len(rules),
+        "skipped_ext": skipped_ext,
+        "include_exts": sorted(include_exts),
+        "exclude_exts": sorted(exclude_exts),
+        "filter_note": filter_note,
+        "target_root": str(target_root),
+    }
+
+
+def run_archive_by_date_preview(
+    paths: list[Path],
+    target_root: Path,
+    output_dir: Path,
+    log_dir: Path,
+    cfg_path: Path | None = None,
+) -> dict[str, object]:
+    return _build_archive_preview(paths, target_root, "date", output_dir, log_dir, cfg_path=cfg_path)
+
+
+def run_archive_by_type_preview(
+    cfg_path: Path,
+    paths: list[Path],
+    target_root: Path,
+    output_dir: Path,
+    log_dir: Path,
+) -> dict[str, object]:
+    return _build_archive_preview(paths, target_root, "type", output_dir, log_dir, cfg_path=cfg_path)
+
+
+def run_archive_by_date_copy(
+    paths: list[Path],
+    target_root: Path,
+    output_dir: Path,
+    log_dir: Path,
+    cfg_path: Path | None = None,
+) -> dict[str, object]:
+    rows, meta = _build_archive_rows(paths, target_root, "date", log_dir, cfg_path=cfg_path)
+    stat = _copy_archive_rows(rows, output_dir, log_dir)
+    stat.update(meta)
+    return stat
+
+
+def run_archive_by_type_copy(
+    cfg_path: Path,
+    paths: list[Path],
+    target_root: Path,
+    output_dir: Path,
+    log_dir: Path,
+) -> dict[str, object]:
+    rows, meta = _build_archive_rows(paths, target_root, "type", log_dir, cfg_path=cfg_path)
+    stat = _copy_archive_rows(rows, output_dir, log_dir)
+    stat.update(meta)
+    return stat
+
+
+def run_archive_plan_copy(plan_path: Path, output_dir: Path, log_dir: Path) -> dict[str, object]:
+    log = get_logger("archive_copy_plan", log_dir)
+    df = pd.read_excel(plan_path, sheet_name="归档计划", dtype=object).fillna("")
+    required = ["源文件路径", "目标文件路径", "状态"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"归档计划缺少必要列: {', '.join(missing)}")
+
+    rows: list[dict[str, str]] = []
+    copied = skip = failed = 0
+    executable = {"待归档", "未识别日期", "未识别类型"}
+    planned: set[Path] = set()
+
+    for _, row in df.iterrows():
+        src = Path(_norm(row.get("源文件路径")))
+        target_raw = _norm(row.get("目标文件路径"))
+        plan_status = _norm(row.get("状态"))
+        result_status = ""
+        actual_target = ""
+        note = ""
+
+        if plan_status not in executable:
+            skip += 1
+            result_status = "跳过：计划状态不可执行"
+            note = plan_status
+        elif not target_raw:
+            skip += 1
+            result_status = "跳过：目标路径为空"
+        elif not src.exists() or not src.is_file():
+            skip += 1
+            result_status = "跳过：源文件不存在"
+        else:
+            try:
+                target = _next_plan_path(Path(target_raw), planned)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, target)
+                copied += 1
+                actual_target = str(target)
+                result_status = "已复制"
+                if str(target) != target_raw:
+                    note = "目标同名：已自动后缀"
+                log.info("copied src=%s target=%s", src, target)
+            except Exception as e:
+                failed += 1
+                result_status = f"失败：{e}"
+                log.warning("copy failed src=%s target=%s err=%s", src, target_raw, e)
+
+        rows.append({
+            "源文件路径": str(src),
+            "原计划目标路径": target_raw,
+            "实际目标路径": actual_target,
+            "执行状态": result_status,
+            "备注": note,
+        })
+
+    out_df = pd.DataFrame(rows, columns=["源文件路径", "原计划目标路径", "实际目标路径", "执行状态", "备注"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_归档执行结果.xlsx"
+    write_workbook(out_path, {"归档执行结果": out_df})
+    return {
+        "rows": len(rows),
+        "copied": copied,
+        "skip": skip,
+        "failed": failed,
+        "output": out_path,
+    }
 
 
 def _dispatch_first(progids: list[str]):

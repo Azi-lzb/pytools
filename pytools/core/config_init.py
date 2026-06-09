@@ -13,6 +13,7 @@ from .config_xlsx import (
     SHEET_CONFIG_RENAME,
     SHEET_INSTITUTION_MAPPING,
     SHEET_EXTRACT_CONFIG,
+    SHEET_ARCHIVE_TYPE_CONFIG,
     TIMELINE_COLS,
     PATH_MAP_COLS,
     DEDUP_TASK_COLS,
@@ -20,6 +21,7 @@ from .config_xlsx import (
     CONFIG_RENAME_COLS,
     INSTITUTION_MAPPING_COLS,
     EXTRACT_CONFIG_COLS,
+    ARCHIVE_TYPE_CONFIG_COLS,
 )
 
 
@@ -54,7 +56,7 @@ HEADER_COMMENTS = {
         "目标工作表": "关键字段（程序读取）：可空；与目标工作簿路径一起生效。",
         "启用目标写入": "关键字段（程序读取）：Y/是/1 才写目标；空/否不写目标。",
         "set区域": "关键字段（程序读取）：可空；格式 别名@地址;别名@地址（如 机构代码@A3;报表口径@A5），仅宽表汇总使用。",
-        "目标去重列": "关键字段（程序读取）：可空；宽表目标写入去重列，填写输出表列名，支持 分号/逗号 分隔。空则默认按 数据日期+set列+行头路径 去重。",
+        "目标去重列": "关键字段（程序读取）：可空；宽表目标写入去重列，填写输出表列名或列标/列号（如 数据日期;行头路径 或 A;B;C），支持 分号/逗号 分隔。空则默认按 数据日期+set列+行头路径 去重。",
     },
     SHEET_PATH_MAP: {
         "是否启用": "关键字段（程序读取）：Y/是/1 表示启用映射。",
@@ -107,6 +109,14 @@ HEADER_COMMENTS = {
         "根据文件内容重命名": "关键字段（程序读取）：4.6/4.7 使用，L2 填写 sheet@单元格 规则。",
         "原文件名片段": "关键字段（程序读取）：4.8 使用，文件名中要替换的片段（M列）。",
         "新文件名片段": "关键字段（程序读取）：4.8 使用，替换后的文件名片段（N列）。",
+    },
+    SHEET_ARCHIVE_TYPE_CONFIG: {
+        "是否启用": "关键字段（程序读取）：Y/是/1 表示启用该类型规则。",
+        "匹配关键词": "关键字段（程序读取）：按类型归档时，在文件名中查找的关键词。",
+        "归档文件夹": "关键字段（程序读取）：命中关键词后放入的单层文件夹名称。",
+        "备注": "备注字段（仅人工说明）：程序不读取。建议把更具体的关键词放在前面。",
+        "需要归档的后缀": "关键字段（程序读取）：E2 填写允许归档的后缀，支持 xlsx;.xls;docx 多个用分号/逗号/空格分隔；空表示不限制。",
+        "排除归档的后缀": "关键字段（程序读取）：F2 填写要排除的后缀，支持 exe;dll;tmp 多个用分号/逗号/空格分隔；优先级高于 E2。",
     },
     SHEET_INSTITUTION_MAPPING: {
         "原始机构名称": "关键字段（程序读取）：1.2 使用，源文件中待标准化的机构名。",
@@ -214,6 +224,22 @@ def _ensure_global_defaults(ws) -> bool:
     return changed
 
 
+def _ensure_archive_type_examples(ws) -> bool:
+    """仅在无数据行时写入示例，不覆盖用户配置。"""
+    if ws.max_row > 1:
+        return False
+    examples = [
+        ("是", "普惠贷款表", "普惠贷款表", "更具体的关键词放前面"),
+        ("是", "科技贷款表", "科技贷款表", ""),
+        ("是", "存款表", "存款表", ""),
+        ("是", "贷款表", "贷款表", "短关键词放后面"),
+    ]
+    for row_no, row in enumerate(examples, start=2):
+        for col_no, value in enumerate(row, start=1):
+            ws.cell(row_no, col_no).value = value
+    return True
+
+
 def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
     """初始化或修复 config.xlsx。
 
@@ -241,6 +267,7 @@ def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
         (SHEET_DEDUP_TASK, DEDUP_TASK_COLS),
         (SHEET_PRINT_CONFIG, PRINT_CONFIG_COLS),
         (SHEET_CONFIG_RENAME, CONFIG_RENAME_COLS),
+        (SHEET_ARCHIVE_TYPE_CONFIG, ARCHIVE_TYPE_CONFIG_COLS),
         (SHEET_INSTITUTION_MAPPING, INSTITUTION_MAPPING_COLS),
         (SHEET_EXTRACT_CONFIG, EXTRACT_CONFIG_COLS),
     ]
@@ -251,8 +278,9 @@ def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
             h_changed = _ensure_sheet_headers(ws, headers)
             c_changed = _ensure_header_comments(ws, sheet_name, headers)
             r_changed = _ensure_rename_sheet_extra_cells(ws) if sheet_name == SHEET_CONFIG_RENAME else False
+            a_changed = _ensure_archive_type_examples(ws) if sheet_name == SHEET_ARCHIVE_TYPE_CONFIG else False
             d_changed = _ensure_global_defaults(ws) if sheet_name == SHEET_GLOBAL else False
-            if h_changed or c_changed or d_changed or r_changed:
+            if h_changed or c_changed or d_changed or r_changed or a_changed:
                 repaired += 1
                 changed_items: list[str] = []
                 if h_changed:
@@ -261,6 +289,8 @@ def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
                     changed_items.append("comments")
                 if r_changed:
                     changed_items.append("extra_cells")
+                if a_changed:
+                    changed_items.append("examples")
                 if d_changed:
                     changed_items.append("defaults")
                 details.append(f"{sheet_name}: repaired ({','.join(changed_items)})")
@@ -272,6 +302,8 @@ def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
             _ensure_header_comments(ws, sheet_name, headers)
             if sheet_name == SHEET_CONFIG_RENAME:
                 _ensure_rename_sheet_extra_cells(ws)
+            if sheet_name == SHEET_ARCHIVE_TYPE_CONFIG:
+                _ensure_archive_type_examples(ws)
             if sheet_name == SHEET_GLOBAL:
                 _ensure_global_defaults(ws)
             created += 1

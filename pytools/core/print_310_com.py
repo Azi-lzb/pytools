@@ -141,6 +141,7 @@ def _copy_block_com(src_ws, dst_ws, src_bounds, dst_start_row: int, mode: int) -
             dst_rng.Value = src_rng.Value
         except Exception:
             pass
+        _replace_formulas_with_values_com(src_ws, dst_ws, src_bounds, dst_start_row)
     # 列宽（PasteSpecial 不带列宽，得单独搬）
     for c in range(1, cols + 1):
         try:
@@ -164,6 +165,21 @@ def _copy_block_com(src_ws, dst_ws, src_bounds, dst_start_row: int, mode: int) -
         except Exception:
             pass
     return rows, cols
+
+
+def _replace_formulas_with_values_com(src_ws, dst_ws, src_bounds, dst_start_row: int) -> None:
+    """把 COM 粘贴后的公式单元格替换为源单元格当前计算结果。"""
+    sr, sc, er, ec = src_bounds
+    rows = er - sr + 1
+    cols = ec - sc + 1
+    for r in range(rows):
+        for c in range(cols):
+            try:
+                dst_cell = dst_ws.Cells(dst_start_row + r, 1 + c)
+                if bool(dst_cell.HasFormula):
+                    dst_cell.Value = src_ws.Cells(sr + r, sc + c).Value
+            except Exception:
+                continue
 
 
 def _is_zero_like(v) -> bool:
