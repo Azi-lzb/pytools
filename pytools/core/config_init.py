@@ -14,6 +14,8 @@ from .config_xlsx import (
     SHEET_INSTITUTION_MAPPING,
     SHEET_EXTRACT_CONFIG,
     SHEET_ARCHIVE_TYPE_CONFIG,
+    SHEET_SUBMISSION_CHECK_CONFIG,
+    SHEET_FILE_SORT_CONFIG,
     TIMELINE_COLS,
     PATH_MAP_COLS,
     DEDUP_TASK_COLS,
@@ -22,6 +24,8 @@ from .config_xlsx import (
     INSTITUTION_MAPPING_COLS,
     EXTRACT_CONFIG_COLS,
     ARCHIVE_TYPE_CONFIG_COLS,
+    SUBMISSION_CHECK_CONFIG_COLS,
+    FILE_SORT_CONFIG_COLS,
 )
 
 
@@ -106,9 +110,11 @@ HEADER_COMMENTS = {
         "值": "关键字段（程序读取）：3.3 使用。",
         "原表名": "关键字段（程序读取）：3.7 使用，原 Sheet 名。",
         "新表名": "关键字段（程序读取）：3.7 使用，新 Sheet 名。",
-        "根据文件内容重命名": "关键字段（程序读取）：4.6/4.7 使用，L2 填写 sheet@单元格 规则。",
+        "内容重命名启用": "关键字段（程序读取）：4.5/4.6 使用，Y/是/1/true 表示启用。只能启用一条。",
+        "内容重命名取值规则": "关键字段（程序读取）：4.5/4.6 使用，填写 sheet@单元格 规则，多个用分号分隔。",
         "原文件名片段": "关键字段（程序读取）：4.8 使用，文件名中要替换的片段（M列）。",
         "新文件名片段": "关键字段（程序读取）：4.8 使用，替换后的文件名片段（N列）。",
+        "备注": "备注字段（仅人工说明）：程序不读取。建议写适用文件或报表类型。",
     },
     SHEET_ARCHIVE_TYPE_CONFIG: {
         "是否启用": "关键字段（程序读取）：Y/是/1 表示启用该类型规则。",
@@ -117,6 +123,22 @@ HEADER_COMMENTS = {
         "备注": "备注字段（仅人工说明）：程序不读取。建议把更具体的关键词放在前面。",
         "需要归档的后缀": "关键字段（程序读取）：E2 填写允许归档的后缀，支持 xlsx;.xls;docx 多个用分号/逗号/空格分隔；空表示不限制。",
         "排除归档的后缀": "关键字段（程序读取）：F2 填写要排除的后缀，支持 exe;dll;tmp 多个用分号/逗号/空格分隔；优先级高于 E2。",
+    },
+    SHEET_SUBMISSION_CHECK_CONFIG: {
+        "是否启用": "关键字段（程序读取）：Y/是/1/true 表示启用该检查项。",
+        "日期关键词": "关键字段（程序读取）：可空；非空时必须出现在文件名中。",
+        "县区关键词": "关键字段（程序读取）：可空；非空时必须出现在文件名中。",
+        "机构关键词": "关键字段（程序读取）：可空；非空时必须出现在文件名中。",
+        "备用关键词": "关键字段（程序读取）：可空；非空时必须出现在文件名中，可填报表类型等。",
+        "命中次数": "输出字段（程序写入）：匹配到的文件数量。",
+        "命中的文件名": "输出字段（程序写入）：匹配到的文件名，多个用分号分隔。",
+        "备注": "备注字段（仅人工说明）：程序不读取。",
+    },
+    SHEET_FILE_SORT_CONFIG: {
+        "是否启用": "关键字段（程序读取）：Y/是/1/true 表示启用该排序规则。",
+        "排序前缀": "关键字段（程序读取）：支持 1/01/001，程序统一补齐为三位数字。",
+        "匹配关键词": "关键字段（程序读取）：文件名命中任一关键词即使用该前缀，多个用分号/逗号分隔。",
+        "备注": "备注字段（仅人工说明）：程序不读取。",
     },
     SHEET_INSTITUTION_MAPPING: {
         "原始机构名称": "关键字段（程序读取）：1.2 使用，源文件中待标准化的机构名。",
@@ -176,22 +198,19 @@ def _ensure_header_comments(ws, sheet_name: str, headers: list[str]) -> bool:
 
 def _ensure_rename_sheet_extra_cells(ws) -> bool:
     changed = False
-    if ws["L1"].value != "根据文件内容重命名":
-        ws["L1"].value = "根据文件内容重命名"
-        changed = True
-    if ws["L2"].value is None or str(ws["L2"].value).strip() == "":
-        ws["L2"].value = "sheet1@A1;sheet2@A2"
-        changed = True
-    c1 = ws["L1"].comment.text if ws["L1"].comment is not None else ""
-    t1 = "关键字段（程序读取）：4.6 使用，L2 填写取值规则。"
-    if c1 != t1:
-        ws["L1"].comment = Comment(t1, "pytools")
-        changed = True
-    c2 = ws["L2"].comment.text if ws["L2"].comment is not None else ""
-    t2 = "关键字段（程序读取）：4.6 使用，格式 sheet名@单元格;sheet名@单元格，例如 sheet1@A1;sheet2@A2。"
-    if c2 != t2:
-        ws["L2"].comment = Comment(t2, "pytools")
-        changed = True
+    examples = {
+        "O2": "Y",
+        "P2": "sheet1@A1;sheet2@A2",
+        "Q2": "示例：按文件内容单元格生成前缀",
+    }
+    for addr, value in examples.items():
+        if ws[addr].value is None or str(ws[addr].value).strip() == "":
+            ws[addr].value = value
+            changed = True
+    for addr in ("L1", "L2"):
+        if ws[addr].comment is not None:
+            ws[addr].comment = None
+            changed = True
     return changed
 
 
@@ -240,6 +259,35 @@ def _ensure_archive_type_examples(ws) -> bool:
     return True
 
 
+def _ensure_submission_check_examples(ws) -> bool:
+    """仅在无数据行时写入示例，不覆盖用户配置。"""
+    if ws.max_row > 1:
+        return False
+    examples = [
+        ["Y", "202506", "惠城区", "建设银行", "存款表", "", "", "示例：四个非空关键词都要出现在同一文件名"],
+        ["Y", "202506", "", "工商银行", "贷款表", "", "", "示例：文件名没有县区时，县区关键词可留空"],
+    ]
+    for row_no, row in enumerate(examples, start=2):
+        for col_no, value in enumerate(row, start=1):
+            ws.cell(row_no, col_no).value = value
+    return True
+
+
+def _ensure_file_sort_examples(ws) -> bool:
+    """仅在无数据行时写入示例，不覆盖用户配置。"""
+    if ws.max_row > 1:
+        return False
+    examples = [
+        ["Y", "001", "政策性银行;国开行;农发行", "政策性银行"],
+        ["Y", "002", "工商银行;农业银行;中国银行;建设银行;交通银行", "国有银行"],
+        ["Y", "003", "招商银行;浦发银行;中信银行", "股份制银行"],
+    ]
+    for row_no, row in enumerate(examples, start=2):
+        for col_no, value in enumerate(row, start=1):
+            ws.cell(row_no, col_no).value = value
+    return True
+
+
 def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
     """初始化或修复 config.xlsx。
 
@@ -268,6 +316,8 @@ def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
         (SHEET_PRINT_CONFIG, PRINT_CONFIG_COLS),
         (SHEET_CONFIG_RENAME, CONFIG_RENAME_COLS),
         (SHEET_ARCHIVE_TYPE_CONFIG, ARCHIVE_TYPE_CONFIG_COLS),
+        (SHEET_SUBMISSION_CHECK_CONFIG, SUBMISSION_CHECK_CONFIG_COLS),
+        (SHEET_FILE_SORT_CONFIG, FILE_SORT_CONFIG_COLS),
         (SHEET_INSTITUTION_MAPPING, INSTITUTION_MAPPING_COLS),
         (SHEET_EXTRACT_CONFIG, EXTRACT_CONFIG_COLS),
     ]
@@ -279,8 +329,10 @@ def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
             c_changed = _ensure_header_comments(ws, sheet_name, headers)
             r_changed = _ensure_rename_sheet_extra_cells(ws) if sheet_name == SHEET_CONFIG_RENAME else False
             a_changed = _ensure_archive_type_examples(ws) if sheet_name == SHEET_ARCHIVE_TYPE_CONFIG else False
+            sub_changed = _ensure_submission_check_examples(ws) if sheet_name == SHEET_SUBMISSION_CHECK_CONFIG else False
+            fs_changed = _ensure_file_sort_examples(ws) if sheet_name == SHEET_FILE_SORT_CONFIG else False
             d_changed = _ensure_global_defaults(ws) if sheet_name == SHEET_GLOBAL else False
-            if h_changed or c_changed or d_changed or r_changed or a_changed:
+            if h_changed or c_changed or d_changed or r_changed or a_changed or sub_changed or fs_changed:
                 repaired += 1
                 changed_items: list[str] = []
                 if h_changed:
@@ -290,6 +342,10 @@ def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
                 if r_changed:
                     changed_items.append("extra_cells")
                 if a_changed:
+                    changed_items.append("examples")
+                if sub_changed:
+                    changed_items.append("examples")
+                if fs_changed:
                     changed_items.append("examples")
                 if d_changed:
                     changed_items.append("defaults")
@@ -304,6 +360,10 @@ def initialize_or_repair_config(cfg_path: Path) -> dict[str, int]:
                 _ensure_rename_sheet_extra_cells(ws)
             if sheet_name == SHEET_ARCHIVE_TYPE_CONFIG:
                 _ensure_archive_type_examples(ws)
+            if sheet_name == SHEET_SUBMISSION_CHECK_CONFIG:
+                _ensure_submission_check_examples(ws)
+            if sheet_name == SHEET_FILE_SORT_CONFIG:
+                _ensure_file_sort_examples(ws)
             if sheet_name == SHEET_GLOBAL:
                 _ensure_global_defaults(ws)
             created += 1

@@ -295,6 +295,48 @@ def _headers_same(src_ws, tgt_ws) -> bool:
     return True
 
 
+def _header_values(ws) -> list[str]:
+    return [_norm(ws.cell(1, c).value) for c in range(1, _used_col_count(ws) + 1)]
+
+
+def _header_mismatch_detail(src_ws, tgt_ws) -> dict[str, object]:
+    src_headers = _header_values(src_ws)
+    tgt_headers = _header_values(tgt_ws)
+    src_set = set(src_headers)
+    tgt_set = set(tgt_headers)
+    pos_diff = []
+    for i in range(1, min(len(src_headers), len(tgt_headers)) + 1):
+        src_h = src_headers[i - 1]
+        tgt_h = tgt_headers[i - 1]
+        if src_h != tgt_h:
+            pos_diff.append((i, src_h, tgt_h))
+    return {
+        "src_count": len(src_headers),
+        "target_count": len(tgt_headers),
+        "source_only": [h for h in src_headers if h not in tgt_set],
+        "target_only": [h for h in tgt_headers if h not in src_set],
+        "position_diff": pos_diff,
+    }
+
+
+def _fmt_header_items(items: list[str], limit: int = 20) -> str:
+    if not items:
+        return "-"
+    shown = items[:limit]
+    more = len(items) - len(shown)
+    suffix = f"...(+{more})" if more > 0 else ""
+    return ";".join(shown) + suffix
+
+
+def _fmt_position_diff(items: list[tuple[int, str, str]], limit: int = 10) -> str:
+    if not items:
+        return "-"
+    shown = items[:limit]
+    text = ";".join(f"{idx}:源[{src}]!=目标[{tgt}]" for idx, src, tgt in shown)
+    more = len(items) - len(shown)
+    return text + (f"...(+{more})" if more > 0 else "")
+
+
 def _build_existing_key_set(ws, key_cols: list[int]) -> set[tuple[str, ...]]:
     keys: set[tuple[str, ...]] = set()
     if ws.max_row < 2:
@@ -406,8 +448,29 @@ def run_append_by_config(tasks: list[DedupTask], log_dir: Path) -> dict:
 
         if tgt_ws.max_row >= 1 and _norm(tgt_ws.cell(1, 1).value) != "":
             if not _headers_same(src_ws, tgt_ws):
+                detail = _header_mismatch_detail(src_ws, tgt_ws)
                 task_skip += 1
-                log.warning("skip row=%s reason=header_mismatch", t.row_no)
+                log.warning(
+                    "skip row=%s reason=header_mismatch source=%s::%s target=%s::%s "
+                    "src_cols=%s target_cols=%s source_only=%s target_only=%s position_diff=%s",
+                    t.row_no,
+                    t.source_wb,
+                    t.source_ws,
+                    t.target_wb,
+                    t.target_ws,
+                    detail["src_count"],
+                    detail["target_count"],
+                    _fmt_header_items(detail["source_only"]),
+                    _fmt_header_items(detail["target_only"]),
+                    _fmt_position_diff(detail["position_diff"]),
+                )
+                print(
+                    "[2-5跳过] header_mismatch "
+                    f"row={t.row_no} source_only={_fmt_header_items(detail['source_only'], 5)} "
+                    f"target_only={_fmt_header_items(detail['target_only'], 5)} "
+                    f"position_diff={_fmt_position_diff(detail['position_diff'], 3)}",
+                    flush=True,
+                )
                 log.info("row=%s elapsed=%.2fs", t.row_no, perf_counter() - t0_task)
                 continue
 

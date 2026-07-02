@@ -11,7 +11,12 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils.cell import coordinate_from_string
 
-from .config_xlsx import SHEET_ARCHIVE_TYPE_CONFIG, SHEET_CONFIG_RENAME
+from .config_xlsx import (
+    SHEET_ARCHIVE_TYPE_CONFIG,
+    SHEET_CONFIG_RENAME,
+    SHEET_FILE_SORT_CONFIG,
+    SHEET_SUBMISSION_CHECK_CONFIG,
+)
 from .io_excel import write_workbook
 from .logger import get_logger
 
@@ -191,6 +196,253 @@ def _load_archive_type_rules(cfg_path: Path) -> list[tuple[str, str]]:
         if keyword:
             rules.append((keyword, folder))
     return rules
+
+
+def _load_submission_check_rules(cfg_path: Path) -> list[dict[str, object]]:
+    df = pd.read_excel(cfg_path, SHEET_SUBMISSION_CHECK_CONFIG, header=0, dtype=object).fillna("")
+    rules: list[dict[str, object]] = []
+    for idx, row in df.iterrows():
+        if not _is_enabled(row.get("是否启用")):
+            continue
+        groups = []
+        for col in ("日期关键词", "县区关键词", "机构关键词", "备用关键词"):
+            groups.append(_split_tokens(row.get(col)))
+        rules.append({
+            "row_no": int(idx) + 2,
+            "enabled": _norm(row.get("是否启用")),
+            "date_keyword": _norm(row.get("日期关键词")),
+            "area_keyword": _norm(row.get("县区关键词")),
+            "institution_keyword": _norm(row.get("机构关键词")),
+            "extra_keyword": _norm(row.get("备用关键词")),
+            "remark": _norm(row.get("备注")),
+            "groups": groups,
+        })
+    return rules
+
+
+def _file_matches_submission_rule(file_name: str, rule: dict[str, object]) -> bool:
+    name = file_name.lower()
+    has_condition = False
+    for group in rule.get("groups") or []:
+        tokens = [str(x).strip().lower() for x in (group or []) if str(x).strip()]
+        if not tokens:
+            continue
+        has_condition = True
+        if not any(token in name for token in tokens):
+            return False
+    return has_condition
+
+
+def run_submission_check_48(cfg_path: Path, files: list[Path], output_dir: Path, log_dir: Path) -> dict[str, object]:
+    log = get_logger("4_8_submission_check", log_dir)
+    rules = _load_submission_check_rules(cfg_path)
+    if not rules:
+        raise ValueError("提交检查配置 没有启用的检查项。")
+
+    valid_files = [p for p in files if p.exists() and p.is_file()]
+    file_hits: dict[Path, list[dict[str, object]]] = {p: [] for p in valid_files}
+    result_rows: list[dict[str, object]] = []
+
+    for rule in rules:
+        matched = [p for p in valid_files if _file_matches_submission_rule(p.name, rule)]
+        for p in matched:
+            file_hits[p].append(rule)
+        result_rows.append({
+            "是否启用": rule["enabled"],
+            "日期关键词": rule["date_keyword"],
+            "县区关键词": rule["area_keyword"],
+            "机构关键词": rule["institution_keyword"],
+            "备用关键词": rule["extra_keyword"],
+            "命中次数": len(matched),
+            "命中的文件名": "；".join(p.name for p in matched),
+            "备注": rule["remark"],
+            "配置行": rule["row_no"],
+        })
+
+    unmatched_rows = [
+        {"文件名": p.name, "源文件路径": str(p), "备注": "未命中任何启用配置"}
+        for p, hits in file_hits.items()
+        if not hits
+    ]
+    multi_rows = []
+    for p, hits in file_hits.items():
+        if len(hits) <= 1:
+            continue
+        hit_text = "；".join(
+            f"第{h['row_no']}行({h['date_keyword']}|{h['area_keyword']}|{h['institution_keyword']}|{h['extra_keyword']})"
+            for h in hits
+        )
+        multi_rows.append({"文件名": p.name, "源文件路径": str(p), "命中配置": hit_text})
+
+    result_df = pd.DataFrame(result_rows)
+    missing_df = result_df[result_df["命中次数"] == 0].copy()
+    unmatched_df = pd.DataFrame(unmatched_rows, columns=["文件名", "源文件路径", "备注"])
+    multi_df = pd.DataFrame(multi_rows, columns=["文件名", "源文件路径", "命中配置"])
+
+    out_path = output_dir / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_提交缺失检查.xlsx"
+    write_workbook(out_path, {
+        "检查结果": result_df,
+        "缺失清单": missing_df,
+        "未识别文件": unmatched_df,
+        "多重命中文件": multi_df,
+    })
+
+    submitted = int((result_df["命中次数"] > 0).sum()) if not result_df.empty else 0
+    missing = int((result_df["命中次数"] == 0).sum()) if not result_df.empty else 0
+    log.info(
+        "output=%s rules=%s files=%s submitted=%s missing=%s unmatched=%s multi=%s",
+        out_path, len(rules), len(valid_files), submitted, missing, len(unmatched_rows), len(multi_rows),
+    )
+    return {
+        "output": str(out_path),
+        "rules": len(rules),
+        "files": len(valid_files),
+        "submitted": submitted,
+        "missing": missing,
+        "unmatched": len(unmatched_rows),
+        "multi": len(multi_rows),
+    }
+
+
+def _sort_prefix_digits(value) -> str:
+    raw = _norm(value)
+    if not raw:
+        return ""
+    if re.fullmatch(r"\d+(\.0+)?", raw):
+        return str(int(float(raw)))
+    return re.sub(r"\D", "", raw)
+
+
+def _sort_prefix_width(value) -> int:
+    raw = _norm(value)
+    if not raw:
+        return 0
+    if re.fullmatch(r"\d+(\.0+)?", raw):
+        raw = raw.split(".", 1)[0]
+    digits = re.sub(r"\D", "", raw)
+    return len(digits)
+
+
+def _normalize_sort_prefix(value, width: int) -> str:
+    digits = _sort_prefix_digits(value)
+    if not digits:
+        return ""
+    return str(int(digits)).zfill(max(width, 1))
+
+
+def _load_file_sort_rules(cfg_path: Path) -> list[dict[str, object]]:
+    df = pd.read_excel(cfg_path, SHEET_FILE_SORT_CONFIG, header=0, dtype=object).fillna("")
+    width = 1
+    for _, row in df.iterrows():
+        if not _is_enabled(row.get("是否启用")):
+            continue
+        if not _split_tokens(row.get("匹配关键词")):
+            continue
+        width = max(width, _sort_prefix_width(row.get("排序前缀")))
+    rules: list[dict[str, object]] = []
+    for idx, row in df.iterrows():
+        if not _is_enabled(row.get("是否启用")):
+            continue
+        prefix = _normalize_sort_prefix(row.get("排序前缀"), width)
+        keywords = _split_tokens(row.get("匹配关键词"))
+        if not prefix or not keywords:
+            continue
+        rules.append({
+            "row_no": int(idx) + 2,
+            "prefix": prefix,
+            "keywords": keywords,
+            "keywords_text": _norm(row.get("匹配关键词")),
+            "remark": _norm(row.get("备注")),
+        })
+    return rules
+
+
+def _match_file_sort_rule(file_name: str, rules: list[dict[str, object]]) -> dict[str, object] | None:
+    lower_name = file_name.lower()
+    for rule in rules:
+        for kw in rule.get("keywords") or []:
+            if str(kw).lower() in lower_name:
+                return rule
+    return None
+
+
+def _strip_sort_prefix(file_name: str) -> str:
+    stem = Path(file_name).stem
+    suffix = Path(file_name).suffix
+    stem = re.sub(r"^\d{1,3}[_\-\s]+", "", stem)
+    return f"{stem}{suffix}"
+
+
+def run_file_sort_prefix_49(cfg_path: Path, files: list[Path], output_dir: Path, log_dir: Path) -> dict[str, object]:
+    log = get_logger("4_9_file_sort_prefix", log_dir)
+    rules = _load_file_sort_rules(cfg_path)
+    if not rules:
+        raise ValueError("文件排序配置 没有启用且有效的排序规则。")
+
+    rows: list[dict[str, object]] = []
+    renamed = unmatched = skipped = failed = 0
+    for p in files:
+        row = {
+            "源文件路径": str(p),
+            "原文件名": p.name,
+            "新文件名": "",
+            "命中配置行": "",
+            "排序前缀": "",
+            "匹配关键词": "",
+            "状态": "",
+            "备注": "",
+        }
+        if not p.exists() or not p.is_file():
+            skipped += 1
+            row["状态"] = "跳过：非文件"
+            rows.append(row)
+            continue
+
+        rule = _match_file_sort_rule(p.name, rules)
+        if rule is None:
+            unmatched += 1
+            row["状态"] = "未命中"
+            rows.append(row)
+            continue
+
+        prefix = str(rule["prefix"])
+        base_name = _strip_sort_prefix(p.name)
+        target = p.with_name(f"{prefix}_{base_name}")
+        status = "已重命名"
+        try:
+            if target.resolve() == p.resolve():
+                row["新文件名"] = p.name
+            else:
+                if target.exists():
+                    target = _next_path(target)
+                    status = "目标同名：已自动后缀"
+                os.rename(p, target)
+                row["新文件名"] = target.name
+            renamed += 1
+            row["状态"] = status
+            row["命中配置行"] = rule["row_no"]
+            row["排序前缀"] = prefix
+            row["匹配关键词"] = rule["keywords_text"]
+            row["备注"] = rule["remark"]
+            log.info("ok old=%s new=%s row=%s prefix=%s", p.name, row["新文件名"], rule["row_no"], prefix)
+        except Exception as e:
+            failed += 1
+            row["状态"] = "失败"
+            row["备注"] = str(e)
+            log.warning("failed file=%s err=%s", p, e)
+        rows.append(row)
+
+    out_path = output_dir / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_文件排序前缀结果.xlsx"
+    write_workbook(out_path, {"文件排序前缀结果": pd.DataFrame(rows)})
+    return {
+        "output": str(out_path),
+        "rules": len(rules),
+        "files": len(files),
+        "renamed": renamed,
+        "unmatched": unmatched,
+        "skipped": skipped,
+        "failed": failed,
+    }
 
 
 def _archive_type_from_name(name: str, rules: list[tuple[str, str]]) -> str:
@@ -812,16 +1064,35 @@ def _apply_local_name_map(name: str, mapping: list[tuple[str, str]]) -> str:
     return f"{new_stem}{suffix}"
 
 
-def _load_content_rename_spec(cfg_path: Path) -> str:
+def _load_content_rename_config(cfg_path: Path) -> dict[str, object]:
     wb = load_workbook(cfg_path, read_only=True, data_only=True)
     try:
         if SHEET_CONFIG_RENAME not in wb.sheetnames:
-            return ""
+            raise ValueError("重命名配置 缺少工作表。")
         ws = wb[SHEET_CONFIG_RENAME]
-        v = ws["L2"].value
-        return _norm(v)
+        enabled: list[dict[str, object]] = []
+        for row in range(2, ws.max_row + 1):
+            if not _is_enabled(ws.cell(row, 15).value):
+                continue
+            spec = _norm(ws.cell(row, 16).value)
+            remark = _norm(ws.cell(row, 17).value)
+            enabled.append({"row": row, "spec": spec, "remark": remark})
+        if not enabled:
+            raise ValueError("没有启用的内容重命名配置：请在 重命名配置!O:P:Q 中启用一条配置。")
+        if len(enabled) > 1:
+            items = []
+            for item in enabled:
+                remark = str(item.get("remark") or "")
+                suffix = f"（{remark}）" if remark else ""
+                items.append(f"第{item['row']}行{suffix}")
+            raise ValueError("内容重命名配置只能启用一条：" + "、".join(items))
+        return enabled[0]
     finally:
         wb.close()
+
+
+def _load_content_rename_spec(cfg_path: Path) -> str:
+    return str(_load_content_rename_config(cfg_path).get("spec") or "")
 
 
 def _sanitize_name_part(text: str) -> str:
@@ -878,19 +1149,19 @@ def _parse_sheet_cell_spec(spec: str) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for p in parts:
         if "@" not in p:
-            raise ValueError(f"L2 配置格式错误: {p}（应为 sheet@A1）")
+            raise ValueError(f"内容重命名取值规则格式错误: {p}（应为 sheet@A1）")
         sheet_name, addr = p.split("@", 1)
         sheet_name = _norm(sheet_name)
         addr = _norm(addr).upper()
         if not sheet_name or not addr:
-            raise ValueError(f"L2 配置格式错误: {p}（sheet 或地址为空）")
+            raise ValueError(f"内容重命名取值规则格式错误: {p}（sheet 或地址为空）")
         try:
             coordinate_from_string(addr)
         except Exception:
-            raise ValueError(f"L2 地址非法: {p}") from None
+            raise ValueError(f"内容重命名取值规则地址非法: {p}") from None
         out.append((sheet_name, addr))
     if not out:
-        raise ValueError("L2 为空，无法执行根据文件内容重命名。")
+        raise ValueError("内容重命名取值规则为空，无法执行根据文件内容重命名。")
     return out
 
 
@@ -976,7 +1247,8 @@ def run_batch_rename_sheet_37(cfg_path: Path, files: list[Path], log_dir: Path) 
 
 def run_batch_rename_by_content_46(cfg_path: Path, files: list[Path], log_dir: Path) -> dict[str, int]:
     log = get_logger("4_6_batch_rename_by_content", log_dir)
-    spec_text = _load_content_rename_spec(cfg_path)
+    spec_cfg = _load_content_rename_config(cfg_path)
+    spec_text = str(spec_cfg.get("spec") or "")
     items = _parse_sheet_cell_spec(spec_text)
 
     ok = skip = 0
@@ -1054,12 +1326,19 @@ def run_batch_rename_by_content_46(cfg_path: Path, files: list[Path], log_dir: P
                     app.Quit()
                 except Exception:
                     pass
-    return {"ok": ok, "skip": skip, "spec": spec_text}
+    return {
+        "ok": ok,
+        "skip": skip,
+        "spec": spec_text,
+        "config_row": int(spec_cfg.get("row") or 0),
+        "config_remark": str(spec_cfg.get("remark") or ""),
+    }
 
 
 def run_batch_unrename_by_content_47(cfg_path: Path, files: list[Path], log_dir: Path) -> dict[str, int]:
     log = get_logger("4_7_batch_unrename_by_content", log_dir)
-    spec_text = _load_content_rename_spec(cfg_path)
+    spec_cfg = _load_content_rename_config(cfg_path)
+    spec_text = str(spec_cfg.get("spec") or "")
     items = _parse_sheet_cell_spec(spec_text)
 
     ok = skip = 0
@@ -1127,7 +1406,13 @@ def run_batch_unrename_by_content_47(cfg_path: Path, files: list[Path], log_dir:
                     app.Quit()
                 except Exception:
                     pass
-    return {"ok": ok, "skip": skip, "spec": spec_text}
+    return {
+        "ok": ok,
+        "skip": skip,
+        "spec": spec_text,
+        "config_row": int(spec_cfg.get("row") or 0),
+        "config_remark": str(spec_cfg.get("remark") or ""),
+    }
 
 
 def run_batch_rename_local_map_48(cfg_path: Path, files: list[Path], log_dir: Path) -> dict[str, int]:

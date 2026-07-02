@@ -14,6 +14,8 @@ SHEET_CONFIG_RENAME = "重命名配置"
 SHEET_INSTITUTION_MAPPING = "机构映射表"
 SHEET_EXTRACT_CONFIG = "工作表提取"
 SHEET_ARCHIVE_TYPE_CONFIG = "归档类型配置"
+SHEET_SUBMISSION_CHECK_CONFIG = "提交检查配置"
+SHEET_FILE_SORT_CONFIG = "文件排序配置"
 
 REQUIRED_GLOBAL_KEYS = ["输入目录", "输出目录", "日志目录"]
 TIMELINE_COLS = [
@@ -44,14 +46,25 @@ PRINT_CONFIG_COLS = [
     "FitToPagesWide",
     "FitToPagesTall",
     "打印方向",
+    "水平居中",
+    "垂直居中",
+    "不输出批注",
+    "零值不输出",
     "备注",
 ]
 CONFIG_RENAME_COLS = [
     "简称", "全称", "占位C", "代码", "全称(代码映射)", "占位F", "键", "值", "占位I",
-    "原表名", "新表名", "根据文件内容重命名", "原文件名片段", "新文件名片段",
+    "原表名", "新表名", "占位L", "原文件名片段", "新文件名片段",
+    "内容重命名启用", "内容重命名取值规则", "备注",
 ]
 ARCHIVE_TYPE_CONFIG_COLS = [
     "是否启用", "匹配关键词", "归档文件夹", "备注", "需要归档的后缀", "排除归档的后缀",
+]
+SUBMISSION_CHECK_CONFIG_COLS = [
+    "是否启用", "日期关键词", "县区关键词", "机构关键词", "备用关键词", "命中次数", "命中的文件名", "备注",
+]
+FILE_SORT_CONFIG_COLS = [
+    "是否启用", "排序前缀", "匹配关键词", "备注",
 ]
 INSTITUTION_MAPPING_COLS = [
     "原始机构名称", "映射后机构名称", "是否为外资行",
@@ -90,6 +103,8 @@ FEATURE_REQUIRED = {
     "t8": [SHEET_CONFIG_RENAME],
     "t9": [SHEET_CONFIG_RENAME],
     "t10": [SHEET_CONFIG_RENAME],
+    "t11": [SHEET_SUBMISSION_CHECK_CONFIG],
+    "t12": [SHEET_FILE_SORT_CONFIG],
     "ar_date": [],
     "ar_type": [SHEET_ARCHIVE_TYPE_CONFIG],
     "ar_type_copy": [SHEET_ARCHIVE_TYPE_CONFIG],
@@ -113,6 +128,8 @@ SHEET_COL_REQUIRED = {
     SHEET_PRINT_CONFIG: PRINT_CONFIG_COLS,
     SHEET_CONFIG_RENAME: CONFIG_RENAME_COLS,
     SHEET_ARCHIVE_TYPE_CONFIG: ARCHIVE_TYPE_CONFIG_COLS,
+    SHEET_SUBMISSION_CHECK_CONFIG: SUBMISSION_CHECK_CONFIG_COLS,
+    SHEET_FILE_SORT_CONFIG: FILE_SORT_CONFIG_COLS,
     SHEET_INSTITUTION_MAPPING: INSTITUTION_MAPPING_COLS,
     SHEET_EXTRACT_CONFIG: EXTRACT_CONFIG_COLS,
 }
@@ -123,6 +140,8 @@ FEATURE_SHEET_COL_REQUIRED = {
     ("t8", SHEET_CONFIG_RENAME): [],
     ("t9", SHEET_CONFIG_RENAME): [],
     ("t10", SHEET_CONFIG_RENAME): ["原文件名片段", "新文件名片段"],
+    ("t11", SHEET_SUBMISSION_CHECK_CONFIG): ["是否启用", "日期关键词", "县区关键词", "机构关键词", "备用关键词"],
+    ("t12", SHEET_FILE_SORT_CONFIG): ["是否启用", "排序前缀", "匹配关键词"],
     ("ar_type", SHEET_ARCHIVE_TYPE_CONFIG): ["是否启用", "匹配关键词", "归档文件夹", "备注"],
     ("ar_type_copy", SHEET_ARCHIVE_TYPE_CONFIG): ["是否启用", "匹配关键词", "归档文件夹", "备注"],
 }
@@ -515,6 +534,10 @@ def load_print_tasks(cfg_path: Path) -> list[dict]:
             "fit_wide": _to_int(row.get("FitToPagesWide"), 1),
             "fit_tall": _to_int(row.get("FitToPagesTall"), 1),
             "orientation": _to_str(row.get("打印方向")),
+            "center_h": _truthy(row.get("水平居中")),
+            "center_v": _truthy(row.get("垂直居中")),
+            "drop_comments": _truthy(row.get("不输出批注")),
+            "hide_zero": _truthy(row.get("零值不输出")),
             "remark": _to_str(row.get("备注")),
         })
     return out

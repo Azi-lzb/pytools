@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 import pandas as pd
 import pytest
+from openpyxl import Workbook
 
 from pytools.core.config_xlsx import (
     SHEET_GLOBAL, SHEET_TIMELINE_RULE, SHEET_PATH_MAP,
@@ -15,6 +16,7 @@ from pytools.core.precheck_399 import run_precheck
 from pytools.core.timeline_396 import run_timeline_slim
 from pytools.core.wide_397_398 import run_wide_summary, _resolve_target_dedup_idx
 from pytools.core.compare_393 import run_compare
+from pytools.core.dedup_311 import _header_mismatch_detail
 
 
 def _date_col_text(s: pd.Series) -> pd.Series:
@@ -227,6 +229,26 @@ def test_wide_target_write_skips_missing_explicit_dedup_col(env):
     run_wide_summary(rules, pmaps, g, row_suffix_enabled=False, source_paths=[src_a])
 
     assert not target.exists()
+
+
+def test_append_header_mismatch_detail_reports_differences():
+    wb = Workbook()
+    src_ws = wb.active
+    src_ws.title = "src"
+    tgt_ws = wb.create_sheet("target")
+    for col, value in enumerate(["A", "B", "C", "源新增"], start=1):
+        src_ws.cell(1, col).value = value
+    for col, value in enumerate(["A", "B2", "C", "目标旧列"], start=1):
+        tgt_ws.cell(1, col).value = value
+
+    detail = _header_mismatch_detail(src_ws, tgt_ws)
+
+    assert detail["source_only"] == ["B", "源新增"]
+    assert detail["target_only"] == ["B2", "目标旧列"]
+    assert detail["position_diff"] == [
+        (2, "B", "B2"),
+        (4, "源新增", "目标旧列"),
+    ]
 
 
 def test_1_compare_pass_and_diff(env):

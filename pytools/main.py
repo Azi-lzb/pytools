@@ -58,6 +58,8 @@ from pytools.core.convert_33_34_35_37 import (
     run_batch_rename_by_content_46,
     run_batch_unrename_by_content_47,
     run_batch_rename_local_map_48,
+    run_submission_check_48,
+    run_file_sort_prefix_49,
     run_archive_by_date_preview,
     run_archive_by_type_preview,
     run_archive_plan_copy,
@@ -107,7 +109,7 @@ ARCHIVE_MENU = """
 ------ 归档工具 ------
   1  按日期归档（预览）
   2  按类型归档（预览，归档类型配置）
-  3  执行归档计划（复制）
+  3  执行归档计划（归档计划）
   4  按日期归档（直接复制）
   5  按类型归档（直接复制，归档类型配置）
   0  返回
@@ -117,11 +119,11 @@ ARCHIVE_MENU = """
 PENDING_MENU = """
 ------ 一二批处理工具 ------
   1  [自动路由COM] 拆分村镇银行数据
-  2  [自动路由COM] 机构名称标准化
-  3  [自动路由COM] 删除分机构表的外资行
+  2  [自动路由COM] 机构名称标准化（机构映射表）
+  3  [自动路由COM] 删除分机构表的外资行（机构映射表）
   4  [自动路由COM] 外汇页眉修改
   5  [自动路由COM] 地区总分校验
-  6  [自动路由COM] 提取工作表数据
+  6  [自动路由COM] 提取工作表数据（工作表提取）
   7  [自动路由COM] 涉农贷款比上月修正
   0  返回
 ------------------------
@@ -129,11 +131,11 @@ PENDING_MENU = """
 
 TIMELINE_MENU = """
 ------ 时序工具 ------
-  1  表头路径比对（自动路由）
-  2  时序提取（自动路由）
-  3  宽表汇总（行头加后缀，自动路由）
-  4  宽表汇总（行头不加后缀，自动路由）
-  5  预校验
+  1  表头路径比对（时序提取规则）
+  2  时序提取（时序提取规则/路径标准化映射）
+  3  宽表汇总（行头加后缀，时序提取规则/路径标准化映射）
+  4  宽表汇总（行头不加后缀，时序提取规则/路径标准化映射）
+  5  预校验（时序提取规则/路径标准化映射）
   0  返回
 ----------------------
 """
@@ -142,10 +144,10 @@ DEDUP_MENU = """
 ------ 去重工具 ------
   1  按批注检查重复
   2  按批注删除重复
-  3  按配置检查重复
-  4  按配置删除重复
-  5  按配置去重追加到目标
-  6  按配置预校验
+  3  按配置检查重复（去重追加数据配置）
+  4  按配置删除重复（去重追加数据配置）
+  5  按配置去重追加到目标（去重追加数据配置）
+  6  按配置预校验（去重追加数据配置）
   0  返回
 ----------------------
 """
@@ -160,13 +162,15 @@ CONFIG_MENU = """
 
 CONVERT_MENU = """
 ------ 转换工具 ------
-  1  批量重命名文件
-  2  [COM] 批量Excel格式转换
-  3  [COM] 批量Word格式转换
-  4  [自动路由COM] 批量修改Sheet名
-  5  根据文件内容重命名（重命名配置！L2）
-  6  取消根据内容重命名前缀（重命名配置！L2）
-  7  批量局部映射重命名文件（重命名配置！M:N）
+  1  批量重命名文件（重命名配置 A:B/D:E/G:H）
+  2  [COM] 批量Excel格式转换（全局配置）
+  3  [COM] 批量Word格式转换（全局配置）
+  4  [自动路由COM] 批量修改Sheet名（重命名配置 J:K）
+  5  根据文件内容重命名（重命名配置 O:P:Q）
+  6  取消根据内容重命名前缀（重命名配置 O:P:Q）
+  7  批量局部映射重命名文件（重命名配置 M:N）
+  8  提交缺失检查（提交检查配置）
+  9  文件排序前缀（文件排序配置）
   0  返回
 ----------------------
 """
@@ -198,9 +202,9 @@ PRINT_MENU = """
 ------ 打印工具 ------
   1  按批注打印（保留源格式，自动路由）
   2  按批注打印（快速复制，自动路由）
-  3  按配置打印（执行全部模式，自动路由）
-  4  按配置打印预校验
-  5  按配置打印 → 导出 PDF（打印预览，自动路由COM）
+  3  按配置打印（打印配置）
+  4  按配置打印预校验（打印配置）
+  5  按配置打印 → 导出 PDF（打印配置）
   0  返回
 ----------------------
 """
@@ -923,14 +927,22 @@ def dispatch(choice: str) -> None:
             print("[已取消]")
             return
         stat = run_batch_rename_by_content_46(CFG_PATH, srcs, g.log_dir)
-        print(f"[完成] 配置L2={stat.get('spec','')} 成功={stat['ok']} 跳过={stat['skip']}")
+        remark = f" 备注={stat.get('config_remark','')}" if stat.get("config_remark") else ""
+        print(
+            f"[完成] 配置行={stat.get('config_row','')} 规则={stat.get('spec','')}{remark} "
+            f"成功={stat['ok']} 跳过={stat['skip']}"
+        )
     elif choice == "t9":
         srcs = _pick_source_files("选择要取消根据内容重命名前缀的文件（可多选）")
         if not srcs:
             print("[已取消]")
             return
         stat = run_batch_unrename_by_content_47(CFG_PATH, srcs, g.log_dir)
-        print(f"[完成] 配置L2={stat.get('spec','')} 成功={stat['ok']} 跳过={stat['skip']}")
+        remark = f" 备注={stat.get('config_remark','')}" if stat.get("config_remark") else ""
+        print(
+            f"[完成] 配置行={stat.get('config_row','')} 规则={stat.get('spec','')}{remark} "
+            f"成功={stat['ok']} 跳过={stat['skip']}"
+        )
     elif choice == "t10":
         srcs = _pick_source_files(
             "选择要按 M:N 局部映射重命名的文件（可多选，支持任意文件）",
@@ -941,6 +953,34 @@ def dispatch(choice: str) -> None:
             return
         stat = run_batch_rename_local_map_48(CFG_PATH, srcs, g.log_dir)
         print(f"[完成] 映射规则={stat.get('rules', 0)} 成功={stat['ok']} 跳过={stat['skip']}")
+    elif choice == "t11":
+        srcs = _pick_source_files(
+            "选择要检查提交情况的文件（可多选，不递归文件夹）",
+            filetypes=[("所有文件", "*.*")],
+        )
+        if not srcs:
+            print("[已取消]")
+            return
+        stat = run_submission_check_48(CFG_PATH, srcs, g.output_dir, g.log_dir)
+        print(
+            f"[完成] 输出={stat['output']} 配置项={stat['rules']} 文件={stat['files']} "
+            f"已提交={stat['submitted']} 缺失={stat['missing']} "
+            f"未识别文件={stat['unmatched']} 多重命中={stat['multi']}"
+        )
+    elif choice == "t12":
+        srcs = _pick_source_files(
+            "选择要添加排序前缀的文件（可多选，不递归文件夹）",
+            filetypes=[("所有文件", "*.*")],
+        )
+        if not srcs:
+            print("[已取消]")
+            return
+        stat = run_file_sort_prefix_49(CFG_PATH, srcs, g.output_dir, g.log_dir)
+        print(
+            f"[完成] 输出={stat['output']} 规则={stat['rules']} 文件={stat['files']} "
+            f"重命名={stat['renamed']} 未命中={stat['unmatched']} "
+            f"跳过={stat['skipped']} 失败={stat['failed']}"
+        )
     elif choice == "ar_date":
         paths = _pick_archive_paths("选择要按日期归档预览的文件或文件夹")
         if not paths:
@@ -1372,12 +1412,12 @@ def main() -> None:
                 "4": "p8", "5": "ppdf",
             }[sub]
         elif main_choice == "4":
-            sub = _show_sub_menu(CONVERT_MENU, ("1", "2", "3", "4", "5", "6", "7", "0"))
+            sub = _show_sub_menu(CONVERT_MENU, ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"))
             if sub == "0":
                 continue
             mapped = {
                 "1": "t3", "2": "t4", "3": "t5", "4": "t7com",
-                "5": "t8", "6": "t9", "7": "t10",
+                "5": "t8", "6": "t9", "7": "t10", "8": "t11", "9": "t12",
             }[sub]
         elif main_choice == "5":
             sub = _show_sub_menu(CONFIG_MENU, ("1", "2", "0"))
